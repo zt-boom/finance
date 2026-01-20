@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>基金每日预估收益</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<div class="app">
+<header class="app-header">
+<h1>基金每日预估收益</h1>
+<div class="date-row">
+<span>日期</span>
+<span id="current-date"></span>
+</div>
+</header>
+<main class="app-main">
+<section class="card">
+<div class="card-header">
+<h2>持仓明细</h2>
+<button id="add-fund-btn" class="primary-button">添加基金</button>
+</div>
+<div class="card-body">
+<div class="table-wrapper">
+<table class="fund-table">
+<thead>
+<tr>
+<th>名称</th>
+<th>持仓金额(元)</th>
+<th>当日预估涨跌幅(%)</th>
+<th>预估收益(元)</th>
+<th>操作</th>
+</tr>
+</thead>
+<tbody id="fund-table-body"></tbody>
+<tfoot>
+<tr class="summary-row">
+<td>总持仓资金</td>
+<td id="total-amount">0.00</td>
+<td>总预估涨跌幅(%)</td>
+<td id="total-percent">0.00</td>
+<td>总预估收益(元)：<span id="total-profit">0.00</span></td>
+</tr>
+</tfoot>
+</table>
+</div>
+<div class="actions-row">
+<button id="calculate-btn" class="primary-button">计算预估收益</button>
+<button id="reset-percentage-btn" class="secondary-button">清空当日涨跌幅</button>
+</div>
+</div>
+</section>
+<section class="card">
+<div class="card-header">
+<h2>使用说明</h2>
+</div>
+<div class="card-body instructions">
+<ol>
+<li>点击“添加基金”，录入每只基金的名称和持仓金额。</li>
+<li>每天根据估值，填写当日预估涨跌幅。</li>
+<li>点击“计算预估收益”，查看每只基金和合计的预估收益。</li>
+<li>持仓信息会保存在本地浏览器，下次打开仍然存在。</li>
+</ol>
+</div>
+</section>
+</main>
+</div>
+<script src="./main.js"></script>
+</body>
+</html>

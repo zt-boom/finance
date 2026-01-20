@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "基金每日预估收益",
+  "description": "记录基金持仓，获取预估涨跌并计算每日预估收益。",
+  "version": "1.0.0",
+  "action": {
+    "default_title": "基金每日预估收益 v1.0"
+  },
+  "host_permissions": [
+    "https://fundgz.1234567.com.cn/*",
+    "https://fund.eastmoney.com/*"
+  ],
+  "permissions": [
+    "tabs"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}

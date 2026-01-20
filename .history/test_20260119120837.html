@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>功能测试 - 基金每日预估收益</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<div class="app">
+<header class="app-header">
+<h1>功能测试 - 基金每日预估收益</h1>
+<div class="date-row">
+<span>测试模式</span>
+</div>
+</header>
+<main class="app-main">
+<section class="card">
+<div class="card-header">
+<h2>测试结果</h2>
+</div>
+<div class="card-body">
+<div id="test-results"></div>
+</div>
+</section>
+</main>
+</div>
+<script type="module">
+import { formatCurrency, formatNumber, formatPercent, parseFundCodeFromName, isChromeExtensionEnv, createDebounced, getTodayDateString, isTradingTime, applyProfitColor } from './utils.js';
+import { loadHoldingsFromStorage, saveHoldingsToStorage } from './storage.js';
+import { STORAGE_KEY, TRADING_TIME, COLORS } from './config.js';
+
+const testResults = document.getElementById('test-results');
+
+function addResult(testName, passed, message) {
+  const div = document.createElement('div');
+  div.style.padding = '8px';
+  div.style.margin = '4px 0';
+  div.style.borderRadius = '4px';
+  div.style.backgroundColor = passed ? '#d1fae5' : '#fee2e2';
+  div.innerHTML = `
+    <strong>${testName}:</strong> ${passed ? '通过' : '失败'}
+    ${message ? `<br><small>${message}</small>` : ''}
+  `;
+  testResults.appendChild(div);
+}
+
+function runTests() {
+  let passed = 0;
+  let total = 0;
+
+  total++;
+  try {
+    const result = formatCurrency(1234.567);
+    if (result === '1234.57') {
+      addResult('formatCurrency', true, '正确格式化货币');
+      passed++;
+    } else {
+      addResult('formatCurrency', false, `期望 "1234.57", 得到 "${result}"`);
+    }
+  } catch (e) {
+    addResult('formatCurrency', false, e.message);
+  }
+
+  total++;
+  try {
+    const result = formatNumber(12.345);
+    if (result === '12.35') {
+      addResult('formatNumber', true, '正确格式化数字');
+      passed++;
+    } else {
+      addResult('formatNumber', false, `期望 "12.35", 得到 "${result}"`);
+    }
+  } catch (e) {
+    addResult('formatNumber', false, e.message);
+  }
+
+  total++;
+  try {
+    const result = formatPercent(5.678);
+    if (result === '5.68%') {
+      addResult('formatPercent', true, '正确格式化百分比');
+      passed++;
+    } else {
+      addResult('formatPercent', false, `期望 "5.68%", 得到 "${result}"`);
+    }
+  } catch (e) {
+    addResult('formatPercent', false, e.message);
+  }
+
+  total++;
+  try {
+    const result = parseFundCodeFromName('110022 易方达消费行业');
+    if (result === '110022') {
+      addResult('parseFundCodeFromName', true, '正确解析基金代码');
+      passed++;
+    } else {
+      addResult('parseFundCodeFromName', false, `期望 "110022", 得到 "${result}"`);
+    }
+  } catch (e) {
+    addResult('parseFundCodeFromName', false, e.message);
+  }
+
+  total++;
+  try {
+    const result = parseFundCodeFromName('易方达消费行业');
+    if (result === null) {
+      addResult('parseFundCodeFromName (无代码)', true, '正确处理无代码情况');
+      passed++;
+    } else {
+      addResult('parseFundCodeFromName (无代码)', false, `期望 null, 得到 "${result}"`);
+    }
+  } catch (e) {
+    addResult('parseFundCodeFromName (无代码)', false, e.message);
+  }
+
+  total++;
+  try {
+    const result = getTodayDateString();
+    if (result && result.length > 0) {
+      addResult('getTodayDateString', true, `生成日期字符串: ${result}`);
+      passed++;
+    } else {
+      addResult('getTodayDateString', false, '未生成日期字符串');
+    }
+  } catch (e) {
+    addResult('getTodayDateString', false, e.message);
+  }
+
+  total++;
+  try {
+    const result = isChromeExtensionEnv();
+    addResult('isChromeExtensionEnv', true, `检测结果: ${result}`);
+    passed++;
+  } catch (e) {
+    addResult('isChromeExtensionEnv', false, e.message);
+  }
+
+  total++;
+  try {
+    const testHoldings = [
+      { name: '110022 易方达消费行业', zfbAmount: 1000, stockAmount: 2000 }
+    ];
+    saveHoldingsToStorage(STORAGE_KEY, testHoldings);
+    const loaded = loadHoldingsFromStorage(STORAGE_KEY);
+    if (loaded.length === 1 && loaded[0].name === testHoldings[0].name) {
+      addResult('Storage (保存和加载)', true, '正确保存和加载数据');
+      passed++;
+    } else {
+      addResult('Storage (保存和加载)', false, '数据不匹配');
+    }
+  } catch (e) {
+    addResult('Storage (保存和加载)', false, e.message);
+  }
+
+  const summary = document.createElement('div');
+  summary.style.padding = '16px';
+  summary.style.margin = '16px 0';
+  summary.style.borderRadius = '8px';
+  summary.style.backgroundColor = passed === total ? '#d1fae5' : '#fef3c7';
+  summary.style.fontWeight = 'bold';
+  summary.innerHTML = `
+    测试完成: ${passed}/${total} 通过
+    ${passed === total ? '<br>所有测试通过！' : ''}
+  `;
+  testResults.appendChild(summary);
+}
+
+runTests();
+</script>
+</body>
+</html>
