@@ -45,9 +45,17 @@ color: #4b5563;
  color: #b45309;
 }
 
+#current-date {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-variant-numeric: tabular-nums;
+  display: inline-block;
+  min-width: 160px;
+  text-align: center;
+}
+
 .date-row span:last-child {
-font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-variant-numeric: tabular-nums;
 }
 
 .app-main {
@@ -295,15 +303,16 @@ align-items: center;
   display: flex;
   justify-content: center;
   align-items: center;
-  min-width: 140px; /* Fixed width to prevent layout shift */
+  min-width: 80px; /* Reduced width */
+  padding: 6px 12px;
 }
 
 #fetch-btn-status {
-  display: inline-block;
-  min-width: 5em; /* Ensure enough space for content change */
-  text-align: left; /* Keep status left-aligned relative to its container for stability */
-  margin-left: 0;
+  display: none; /* Hide status text to shorten button */
 }
+
+/* Optional: Show status on hover if needed, or remove completely from UI */
+/* #fetch-percent-btn:hover #fetch-btn-status { display: block; position: absolute; ... } */
 
 .summary-items span {
 font-weight: 500;

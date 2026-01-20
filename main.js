@@ -1248,7 +1248,6 @@ element.classList.add("value-zero");
 }
 
 let realUpdateDone = false;
-let realUpdateTimerId = null;
 
 function isAfterRealUpdateTime() {
 const now = new Date();
@@ -1268,10 +1267,6 @@ function triggerRealUpdateIfNeeded() {
   fetchRealPercentagesForAllFunds().then(result => {
     if (result && result.allDone) {
       realUpdateDone = true;
-      if (realUpdateTimerId != null) {
-        clearInterval(realUpdateTimerId);
-        realUpdateTimerId = null;
-      }
     }
   });
 }
@@ -1354,17 +1349,33 @@ populateTableFromStorage();
 const autoRefreshSeconds = 300;
 let remainingSeconds = autoRefreshSeconds;
   function updateCountdown() {
+    const status = getAppStatus();
+    // Show paused text if state is PAUSED or (REAL and done)
+    const isPaused = status === APP_STATE.PAUSED || (status === APP_STATE.REAL && realUpdateDone);
+
     if (countdownElement) {
-      const status = getAppStatus();
-      // Show paused text if state is PAUSED or (REAL and done)
-      // Note: APP_STATE.REAL means it IS in the time window, but we might stop refreshing if realUpdateDone is true.
-      
-      const isPaused = status === APP_STATE.PAUSED || (status === APP_STATE.REAL && realUpdateDone);
-      
       if (isPaused) {
         countdownElement.textContent = "（已暂停）";
       } else {
         countdownElement.textContent = `（${remainingSeconds}s）`;
+      }
+    }
+
+    if (tradingStatusElement) {
+      if (status === APP_STATE.ESTIMATE) {
+        tradingStatusElement.textContent = `交易时段，自动刷新预估值（${remainingSeconds}s）`;
+        tradingStatusElement.classList.remove("paused");
+      } else if (status === APP_STATE.REAL) {
+         if (realUpdateDone) {
+           tradingStatusElement.textContent = "真实涨跌更新完毕";
+           tradingStatusElement.classList.add("paused");
+         } else {
+           tradingStatusElement.textContent = `盘后时段，自动刷新真实涨跌（${remainingSeconds}s）`;
+           tradingStatusElement.classList.remove("paused");
+         }
+      } else {
+        tradingStatusElement.textContent = "非刷新时段，自动刷新已暂停";
+        tradingStatusElement.classList.add("paused");
       }
     }
   }
@@ -1405,10 +1416,6 @@ let remainingSeconds = autoRefreshSeconds;
         // Manually trigger real update, resetting the 'done' flag to allow re-fetch
         realUpdateDone = false; 
         triggerRealUpdateIfNeeded();
-        if (realUpdateTimerId === null && status === APP_STATE.REAL) {
-           // If we are in valid REAL time window, ensure timer is running
-           realUpdateTimerId = setInterval(triggerRealUpdateIfNeeded, 300000);
-        }
       } else {
         // Default to estimate
         autoFetchPercentages({ useButton: true, showAlert: true });
@@ -1430,52 +1437,33 @@ setupDailyRealUpdateScheduler();
   if (dateElement) {
     setInterval(() => {
       dateElement.textContent = getTodayDateString();
-      if (tradingStatusElement) {
-        const status = getAppStatus();
-        if (status === APP_STATE.ESTIMATE) {
-          tradingStatusElement.textContent = "交易时段，自动刷新预估值";
-          tradingStatusElement.classList.remove("paused");
-        } else if (status === APP_STATE.REAL) {
-           if (realUpdateDone) {
-             tradingStatusElement.textContent = "真实涨跌更新完毕";
-             tradingStatusElement.classList.add("paused");
-           } else {
-             tradingStatusElement.textContent = "盘后时段，自动刷新真实涨跌";
-             tradingStatusElement.classList.remove("paused");
-           }
-        } else {
-          tradingStatusElement.textContent = "非刷新时段，自动刷新已暂停";
-          tradingStatusElement.classList.add("paused");
+      
+      const status = getAppStatus();
+      let shouldCountdown = true;
+      
+      if (status === APP_STATE.PAUSED) {
+        shouldCountdown = false;
+      } else if (status === APP_STATE.REAL && realUpdateDone) {
+        shouldCountdown = false;
+      }
+
+      if (shouldCountdown) {
+        remainingSeconds -= 1;
+        if (remainingSeconds <= 0) {
+          if (status === APP_STATE.ESTIMATE) {
+            autoFetchPercentages({ useButton: false, showAlert: false });
+          } else if (status === APP_STATE.REAL) {
+            triggerRealUpdateIfNeeded();
+          }
+          remainingSeconds = autoRefreshSeconds;
         }
       }
-      
+
       // Update countdown display here to ensure it reflects current status immediately
       // Even if main interval is paused, we want to update the text to "Paused"
       updateCountdown();
     }, 1000);
   }
-  setInterval(() => {
-    const status = getAppStatus();
-    if (status === APP_STATE.PAUSED) {
-      return;
-    }
-    
-    // Check if we should stop REAL update
-    if (status === APP_STATE.REAL && realUpdateDone) {
-       return;
-    }
-
-    remainingSeconds -= 1;
-    if (remainingSeconds <= 0) {
-      if (status === APP_STATE.ESTIMATE) {
-        autoFetchPercentages({ useButton: false, showAlert: false });
-      } else if (status === APP_STATE.REAL) {
-        triggerRealUpdateIfNeeded();
-      }
-      remainingSeconds = autoRefreshSeconds;
-    }
-    updateCountdown();
-  }, 1000);
 }
 
 function updateRowIndices() {
