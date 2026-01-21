@@ -12,7 +12,7 @@ line-height: 1.5;
 }
 
 .app {
- max-width: 1300px;
+ max-width: 1400px;
 margin: 0 auto;
 padding: 24px 16px 40px;
 }
@@ -230,12 +230,12 @@ text-align: left;
 
 .fund-table th:nth-child(2),
 .fund-table td:nth-child(2) {
- width: 27%;
+ width: 29%;
 }
 
 .fund-table th:nth-child(10),
 .fund-table td:nth-child(10) {
- width: 6%;
+ width: 8%;
 padding-left: 0;
 text-align: center;
 }

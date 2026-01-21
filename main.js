@@ -72,7 +72,7 @@ const nameValue = inputs[0] ? inputs[0].value.trim() : "";
 const zfbValue = inputs[1] ? inputs[1].value.trim() : "";
 const stockValue = inputs[2] ? inputs[2].value.trim() : "";
 const isEmptyRow = !nameValue && !zfbValue && !stockValue;
-if (!isEmptyRow) {
+if (!isEmptyRow && nameValue) {
 const confirmed = window.confirm("确定要删除这条持仓记录吗？");
 if (!confirmed) {
 return;
@@ -200,36 +200,27 @@ function getCurrentMinutes() {
 function getAppStatus() {
   const now = new Date();
   const day = now.getDay();
-  // Weekend: always pause? Or maybe 20:00-24:00 on Sunday?
-  // User didn't specify weekend behavior, assuming standard trading days logic applies to Mon-Fri.
-  // Standard practice: no trading on weekends.
-  // However, for REAL update, sometimes data comes later.
-  // Let's stick to Mon-Fri for ESTIMATE. 
-  // For REAL, maybe we allow it if user wants to check history? 
-  // User instruction implies daily schedule. Let's assume Mon-Fri for now to be safe, or check existing isTradingTime logic.
-  // Existing isTradingTime excluded Sat/Sun. Let's keep that for ESTIMATE.
-  
+
+  // Special handling for Friday night extending into Saturday morning?
+  // Or just simple rule: Weekends are PAUSED for AUTO refresh.
+  // Manual refresh is always possible if logic permits.
   if (day === 0 || day === 6) {
-    // Weekends: maybe allow REAL update if missed?
-    // User said "20:00到24:00...获取真实涨跌". 
-    // Usually fund values update on trading days.
-    return APP_STATE.PAUSED;
+      return APP_STATE.PAUSED;
   }
 
   const t = getCurrentMinutes();
 
-  // 09:00 - 11:30 ESTIMATE
-  if (t >= 9 * 60 && t <= 11 * 60 + 30) {
-    return APP_STATE.ESTIMATE;
-  }
-  
-  // 13:00 - 15:00 ESTIMATE (User specified 15:00, not 15:30)
-  if (t >= 13 * 60 && t < 15 * 60) {
+  // 09:20 - 15:10 ESTIMATE (Continuous window as requested)
+  // Actually usually 11:30-13:00 is break, but user said "9:20-15:10"
+  // Let's assume user wants continuous updates or just simplified range.
+  // Standard A-share is 9:30-11:30, 13:00-15:00.
+  // Let's stick to the exact user request: 9:20 - 15:10.
+  if (t >= 9 * 60 + 20 && t < 15 * 60 + 10) {
     return APP_STATE.ESTIMATE;
   }
 
-  // 20:00 - 24:00 REAL
-  if (t >= 20 * 60 && t < 24 * 60) {
+  // 18:00 - 22:00 REAL
+  if (t >= 18 * 60 && t < 22 * 60) {
     return APP_STATE.REAL;
   }
 
@@ -1290,12 +1281,12 @@ element.classList.add("value-zero");
 let realUpdateDone = false;
 
 function isAfterRealUpdateTime() {
-const now = new Date();
-const h = now.getHours();
-const m = now.getMinutes();
-const t = h * 60 + m;
-const start = 20 * 60;
-  const end = 24 * 60;
+  const now = new Date();
+  const h = now.getHours();
+  const m = now.getMinutes();
+  const t = h * 60 + m;
+  const start = 18 * 60;
+  const end = 22 * 60;
   return t >= start && t < end;
 }
 
@@ -1583,11 +1574,10 @@ let remainingSeconds = autoRefreshSeconds;
       
       const t = getCurrentMinutes();
       
-      // Check for 20:00 to 09:00 (next day) window for Manual REAL fetch
-      // 20:00 - 24:00 is covered by APP_STATE.REAL usually, but if day is 0/6 it returns PAUSED
-      // 00:00 - 09:00 is PAUSED
+      // Check for 18:00 to 09:20 (next day) window for Manual REAL fetch
+      // 18:00 - 22:00 is covered by APP_STATE.REAL usually
       
-      const isNightOrMorning = (t >= 20 * 60) || (t < 9 * 60);
+      const isNightOrMorning = (t >= 18 * 60) || (t < 9 * 60 + 20);
       
       if (status === APP_STATE.REAL || isNightOrMorning) {
         // Manually trigger real update, resetting the 'done' flag to allow re-fetch
