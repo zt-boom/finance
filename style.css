@@ -265,6 +265,7 @@ margin: 0;
 
 .fund-table input[type="number"] {
 -moz-appearance: textfield;
+appearance: textfield;
 }
 
 .fund-table input:focus {
