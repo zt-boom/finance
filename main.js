@@ -1107,6 +1107,7 @@ function autoFetchPercentages(options) {
          // After 9:00, show estimate or 0
          const value = percent === 0 ? "0.00" : formatNumber(percent);
          percentCell.textContent = `${value}%`;
+         applyProfitColor(percentCell, percent);
          if (percentCell.dataset && percentCell.dataset.real) {
            delete percentCell.dataset.real;
          }
@@ -1121,6 +1122,7 @@ function autoFetchPercentages(options) {
         }
         const value = formatNumber(percent);
         percentCell.textContent = `${value}%`;
+        applyProfitColor(percentCell, percent);
         if (percentCell.dataset && percentCell.dataset.real) {
           delete percentCell.dataset.real;
         }
@@ -1131,6 +1133,7 @@ function autoFetchPercentages(options) {
       if (onlyEstimates) {
         // After 9:00, failed to get estimate -> set to 0
         percentCell.textContent = "0.00%";
+        applyProfitColor(percentCell, 0);
         if (percentCell.dataset && percentCell.dataset.real) {
           delete percentCell.dataset.real;
         }
@@ -1183,13 +1186,14 @@ if (percentCell.dataset && percentCell.dataset.real === "true") {
 return;
 }
 const promise = fetchFundRealPercent(code).then(percent => {
-const value = formatNumber(percent);
-percentCell.textContent = `${value}%(实)`;
-if (percentCell.dataset) {
-percentCell.dataset.real = "true";
-}
-return true;
-}).catch(() => false);
+        const value = formatNumber(percent);
+        percentCell.textContent = `${value}%(实)`;
+        applyProfitColor(percentCell, percent);
+        if (percentCell.dataset) {
+          percentCell.dataset.real = "true";
+        }
+        return true;
+      }).catch(() => false);
 promises.push(promise);
 });
 if (promises.length === 0) {
