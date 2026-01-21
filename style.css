@@ -108,7 +108,7 @@ margin-bottom: 12px;
 
 .fund-table td {
  border-bottom: 1px solid #e5e7eb;
- padding: 8px 8px;
+ padding: 10px 8px;
  text-align: left;
 }
 
@@ -131,16 +131,20 @@ white-space: nowrap;
 }
 
 .fund-table thead {
-background-color: #f9fafb;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background-color: #f9fafb;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
 .fund-table th {
  font-weight: 600;
  color: #374151;
  text-align: center;
- padding: 8px 8px;
+ padding: 10px 8px;
  line-height: 28px;
- font-size: 13px;
+ font-size: 14px;
 }
 .fund-table th.sortable {
  cursor: pointer;
@@ -280,10 +284,23 @@ color: #10b981;
 color: #6b7280;
 }
 
+.summary-row {
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.summary-row:hover {
+  background-color: #e5e7eb;
+}
+
+.summary-row:active {
+  background-color: #d1d5db;
+}
+
 .summary-row td {
 font-weight: 600;
 color: #111827;
-background-color: #f3f4f6;
+background-color: inherit;
 }
 
 .summary-row td:first-child {
@@ -350,10 +367,26 @@ border-radius: 4px;
 border: none;
 cursor: pointer;
 font-size: 13px;
-padding: 6px 10px;
+padding: 6px 12px;
 display: flex;
 align-items: center;
 justify-content: center;
+gap: 6px;
+transition: all 0.2s;
+}
+
+.btn-icon {
+  width: 14px;
+  height: 14px;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.refresh-icon.spinning {
+  animation: spin 1s linear infinite;
 }
 
 .primary-button {
@@ -427,12 +460,25 @@ gap: 4px;
 }
 
 @media (max-width: 640px) {
-.app {
-padding-inline: 12px;
+  .app {
+    padding-inline: 12px;
+  }
+  .card-header {
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-start;
+  }
 }
-.card-header {
-flex-direction: column;
-gap: 8px;
-align-items: flex-start;
+
+@keyframes highlight-fade {
+  0% {
+    background-color: rgba(37, 99, 235, 0.1);
+  }
+  100% {
+    background-color: transparent;
+  }
 }
+
+.value-updated {
+  animation: highlight-fade 1.5s ease-out;
 }

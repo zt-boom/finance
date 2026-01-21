@@ -741,6 +741,24 @@ function savePercentStatusToStorage(statusMap) {
   }
 }
 
+function loadSortStatusFromStorage() {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY_SORT);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (e) {
+    return null;
+  }
+}
+
+function saveSortStatusToStorage(sortStatus) {
+  try {
+    const serialized = JSON.stringify(sortStatus);
+    window.localStorage.setItem(STORAGE_KEY_SORT, serialized);
+  } catch (e) {
+  }
+}
+
 function createTableRow(fund) {
 const tr = document.createElement("tr");
 const indexTd = document.createElement("td");
@@ -972,21 +990,35 @@ function calculateProfit() {
     });
   });
 
+function updateAndFlash(element, newValueString) {
+  if (!element) return;
+  if (element.textContent !== newValueString) {
+    element.textContent = newValueString;
+    const parent = element.parentElement;
+    if (parent) {
+      parent.classList.remove("value-updated");
+      void parent.offsetWidth; // trigger reflow
+      parent.classList.add("value-updated");
+    }
+  }
+}
+
   updates.forEach(data => {
       if (data.amountSpan) {
-          data.amountSpan.textContent = formatCurrency(data.amount);
+          updateAndFlash(data.amountSpan, formatCurrency(data.amount));
       }
       
       if (!data.validCalc) {
-          if (data.zfbProfitCell) { data.zfbProfitCell.textContent = "0.00"; applyProfitColor(data.zfbProfitCell, 0); }
-          if (data.stockProfitCell) { data.stockProfitCell.textContent = "0.00"; applyProfitColor(data.stockProfitCell, 0); }
-          if (data.profitCell) { data.profitCell.textContent = "0.00"; applyProfitColor(data.profitCell, 0); }
+          if (data.zfbProfitCell) { updateAndFlash(data.zfbProfitCell, "0.00"); applyProfitColor(data.zfbProfitCell, 0); }
+          if (data.stockProfitCell) { updateAndFlash(data.stockProfitCell, "0.00"); applyProfitColor(data.stockProfitCell, 0); }
+          if (data.profitCell) { updateAndFlash(data.profitCell, "0.00"); applyProfitColor(data.profitCell, 0); }
       } else {
-          if (data.zfbProfitCell) { data.zfbProfitCell.textContent = formatCurrency(data.zfbProfit); applyProfitColor(data.zfbProfitCell, data.zfbProfit); }
-          if (data.stockProfitCell) { data.stockProfitCell.textContent = formatCurrency(data.stockProfit); applyProfitColor(data.stockProfitCell, data.stockProfit); }
+          if (data.zfbProfitCell) { updateAndFlash(data.zfbProfitCell, formatCurrency(data.zfbProfit)); applyProfitColor(data.zfbProfitCell, data.zfbProfit); }
+          if (data.stockProfitCell) { updateAndFlash(data.stockProfitCell, formatCurrency(data.stockProfit)); applyProfitColor(data.stockProfitCell, data.stockProfit); }
           if (data.profitCell) {
               const suffix = data.isReal ? "(实)" : "";
-              data.profitCell.textContent = `${formatCurrency(data.rowProfit)}${suffix}`;
+              const newText = `${formatCurrency(data.rowProfit)}${suffix}`;
+              updateAndFlash(data.profitCell, newText);
               applyProfitColor(data.profitCell, data.rowProfit);
           }
       }
@@ -1149,17 +1181,21 @@ window.alert("请先在名称中输入包含6位基金代码的内容");
 }
 return;
 }
-const fetchButton = useButton ? document.getElementById("fetch-percent-btn") : null;
-if (fetchButton) {
-fetchButton.disabled = true;
-}
-isFetchingPercentages = true;
-Promise.all(promises).then(results => {
-isFetchingPercentages = false;
-const successCount = results.filter(Boolean).length;
-if (fetchButton) {
-fetchButton.disabled = false;
-}
+  const fetchButton = useButton ? document.getElementById("fetch-percent-btn") : null;
+  if (fetchButton) {
+  fetchButton.disabled = true;
+  const icon = fetchButton.querySelector(".refresh-icon");
+  if (icon) icon.classList.add("spinning");
+  }
+  isFetchingPercentages = true;
+  Promise.all(promises).then(results => {
+  isFetchingPercentages = false;
+  const successCount = results.filter(Boolean).length;
+  if (fetchButton) {
+  fetchButton.disabled = false;
+  const icon = fetchButton.querySelector(".refresh-icon");
+  if (icon) icon.classList.remove("spinning");
+  }
 if (successCount === 0) {
 if (showAlert) {
 window.alert("未能获取任何基金的预估涨跌，请检查基金代码或网络连接");
@@ -1286,6 +1322,111 @@ function setupDailyRealUpdateScheduler() {
   }
 }
 
+function exportToCSV() {
+  const rows = getFundRows();
+  if (rows.length === 0) {
+    window.alert("暂无数据可导出");
+    return;
+  }
+
+  const csvRows = [];
+  // Header
+  csvRows.push(["序号", "名称", "代码", "ZFB持仓", "证券持仓", "持仓金额", "预估涨跌(%)", "预估收益(元)"].join(","));
+
+  // Data rows
+  rows.forEach((row, index) => {
+    const inputs = getFundRowInputs(row);
+    const name = inputs.nameInput ? inputs.nameInput.value.trim() : "";
+    const code = parseFundCodeFromName(name) || "";
+    const cleanName = name.replace(code, "").trim(); // Remove code from name if present twice? Actually user input is "code name", so let's keep it as is or separate. 
+    // Let's just use the full name value
+    const zfb = inputs.zfbInput ? inputs.zfbInput.value : "0.00";
+    const stock = inputs.stockInput ? inputs.stockInput.value : "0.00";
+    
+    const amountSpan = row.querySelector('span[data-role="amount-display"]');
+    const amount = amountSpan ? amountSpan.textContent.replace(/,/g, "") : "0.00";
+    
+    const percentCell = row.querySelector('td[data-role="percent-cell"] span');
+    let percent = percentCell ? percentCell.textContent : "0.00%";
+    percent = percent.replace("%", "").replace("(实)", "");
+    
+    const profitCell = row.querySelector('td[data-role="profit-cell"] span');
+    let profit = profitCell ? profitCell.textContent.replace(/,/g, "") : "0.00";
+    profit = profit.replace("(实)", "");
+
+    // Escape quotes in name
+    const escapedName = `"${name.replace(/"/g, '""')}"`;
+    
+    csvRows.push([
+      index + 1,
+      escapedName,
+      `"\t${code}"`, // Tab to prevent Excel auto-formatting as number
+      zfb,
+      stock,
+      amount,
+      percent,
+      profit
+    ].join(","));
+  });
+
+  // Footer (Summary)
+  const totalAmount = document.getElementById("total-amount").textContent.replace(/,/g, "");
+  const totalProfit = document.getElementById("total-profit").textContent.replace(/,/g, "");
+  const totalPercent = document.getElementById("total-percent").textContent.replace("%", "");
+  
+  csvRows.push([]);
+  csvRows.push(["", "合计", "", "", "", totalAmount, totalPercent, totalProfit].join(","));
+
+  const csvString = "\uFEFF" + csvRows.join("\n"); // BOM for Excel
+  const blob = new Blob([csvString], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  
+  const link = document.createElement("a");
+  link.setAttribute("href", url);
+  const dateStr = getTodayDateString().split(" ")[0];
+  link.setAttribute("download", `基金预估收益_${dateStr}.csv`);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+function copySummaryReport() {
+  const dateStr = getTodayDateString();
+  const totalAmount = document.getElementById("total-amount").textContent;
+  const totalProfit = document.getElementById("total-profit").textContent;
+  const totalPercent = document.getElementById("total-percent").textContent;
+  
+  const lines = [];
+  lines.push(`【基金战报】${dateStr}`);
+  lines.push(`总持有：${totalAmount}`);
+  lines.push(`当日盈亏：${totalProfit} (${totalPercent})`);
+  lines.push("----------------");
+  
+  const rows = getFundRows();
+  rows.forEach((row, index) => {
+    const inputs = getFundRowInputs(row);
+    const name = inputs.nameInput ? inputs.nameInput.value.trim() : "未命名";
+    // Extract just name part if possible, but full string is fine
+    const simpleName = name.split(/\s+/).slice(1).join(" ") || name;
+    
+    const percentCell = row.querySelector('td[data-role="percent-cell"] span');
+    const profitCell = row.querySelector('td[data-role="profit-cell"] span');
+    
+    const percent = percentCell ? percentCell.textContent : "0%";
+    const profit = profitCell ? profitCell.textContent : "0";
+    
+    lines.push(`${index + 1}. ${simpleName}: ${percent} (${profit})`);
+  });
+  
+  const text = lines.join("\n");
+  
+  navigator.clipboard.writeText(text).then(() => {
+    window.alert("战报已复制到剪贴板！");
+  }).catch(() => {
+    window.alert("复制失败，请手动复制。");
+  });
+}
+
 function initApp() {
 const dateElement = document.getElementById("current-date");
 const tradingStatusElement = document.getElementById("trading-status");
@@ -1303,10 +1444,33 @@ populateTableFromStorage();
   totalProfitElement = document.getElementById("total-profit");
   const addFundButton = document.getElementById("add-fund-btn");
   const fetchPercentButton = document.getElementById("fetch-percent-btn");
+  const exportButton = document.getElementById("export-btn");
   const countdownElement = document.getElementById("fetch-btn-status");
+  const summaryRow = document.querySelector(".summary-row");
+
   percentHeader = document.querySelector('th[data-sort="percent"]');
   profitHeader = document.querySelector('th[data-sort="profit"]');
   updateSortHeaderUI();
+  
+  const sortStatus = loadSortStatusFromStorage();
+  if (sortStatus) {
+    originalOrderSnapshot = getCurrentRows();
+    if (sortStatus.type === "percent") {
+      percentSortOrder = sortStatus.order;
+      updateSortHeaderUI();
+      sortTableBy("percent", percentSortOrder);
+    } else if (sortStatus.type === "profit") {
+      profitSortOrder = sortStatus.order;
+      updateSortHeaderUI();
+      sortTableBy("profit", profitSortOrder);
+    }
+  }
+
+  if (summaryRow) {
+    summaryRow.addEventListener("click", copySummaryReport);
+    summaryRow.title = "点击复制今日战报";
+  }
+
   if (tbody) {
   tbody.addEventListener("click", handleTableClick);
   }
@@ -1316,14 +1480,17 @@ populateTableFromStorage();
         originalOrderSnapshot = getCurrentRows();
         percentSortOrder = "desc";
         profitSortOrder = null;
+        saveSortStatusToStorage({ type: "percent", order: "desc" });
         updateSortHeaderUI();
         sortTableBy("percent", "desc");
       } else if (percentSortOrder === "desc") {
         percentSortOrder = "asc";
+        saveSortStatusToStorage({ type: "percent", order: "asc" });
         updateSortHeaderUI();
         sortTableBy("percent", "asc");
       } else {
         percentSortOrder = null;
+        saveSortStatusToStorage(null);
         updateSortHeaderUI();
         restoreOriginalOrder();
         originalOrderSnapshot = null;
@@ -1336,14 +1503,17 @@ populateTableFromStorage();
         originalOrderSnapshot = getCurrentRows();
         profitSortOrder = "desc";
         percentSortOrder = null;
+        saveSortStatusToStorage({ type: "profit", order: "desc" });
         updateSortHeaderUI();
         sortTableBy("profit", "desc");
       } else if (profitSortOrder === "desc") {
         profitSortOrder = "asc";
+        saveSortStatusToStorage({ type: "profit", order: "asc" });
         updateSortHeaderUI();
         sortTableBy("profit", "asc");
       } else {
         profitSortOrder = null;
+        saveSortStatusToStorage(null);
         updateSortHeaderUI();
         restoreOriginalOrder();
         originalOrderSnapshot = null;
@@ -1397,6 +1567,9 @@ let remainingSeconds = autoRefreshSeconds;
       tbody.appendChild(row);
       updateRowIndices();
     });
+  }
+  if (exportButton) {
+    exportButton.addEventListener("click", exportToCSV);
   }
   if (fetchPercentButton) {
     fetchPercentButton.addEventListener("click", () => {

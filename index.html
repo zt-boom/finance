@@ -21,9 +21,24 @@
 <div class="card-header">
 <h2>持仓明细</h2>
 <div class="card-header-actions">
-<button id="add-fund-btn" class="primary-button">添加基金</button>
+<button id="export-btn" class="secondary-button" title="导出CSV">
+  <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+  </svg>
+  <span>导出</span>
+</button>
+<button id="add-fund-btn" class="primary-button">
+  <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <path d="M12 5v14M5 12h14"/>
+  </svg>
+  <span>添加</span>
+</button>
 <button id="fetch-percent-btn" class="secondary-button">
-  <span class="btn-text">刷新</span><span id="fetch-btn-status">（300s）</span>
+  <svg class="btn-icon refresh-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <path d="M23 4v6h-6M1 20v-6h6"/>
+    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+  </svg>
+  <span class="btn-text">刷新</span><span id="fetch-btn-status"></span>
 </button>
 </div>
 </div>
