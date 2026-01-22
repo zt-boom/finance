@@ -1172,7 +1172,7 @@ window.alert("请先在名称中输入包含6位基金代码的内容");
 }
 return;
 }
-  const fetchButton = useButton ? document.getElementById("fetch-percent-btn") : null;
+  const fetchButton = document.getElementById("fetch-percent-btn");
   if (fetchButton) {
   fetchButton.disabled = true;
   const icon = fetchButton.querySelector(".refresh-icon");
@@ -1194,6 +1194,13 @@ window.alert("未能获取任何基金的预估涨跌，请检查基金代码或
 return;
 }
 scheduleProfit();
+
+// Re-apply sort if active
+if (percentSortOrder) {
+  sortTableBy("percent", percentSortOrder);
+} else if (profitSortOrder) {
+  sortTableBy("profit", profitSortOrder);
+}
 });
 }
 
@@ -1209,9 +1216,10 @@ const percentCell = row.querySelector('td[data-role="percent-cell"] span');
 if (!percentCell) {
 return;
 }
-if (percentCell.dataset && percentCell.dataset.real === "true") {
-return;
-}
+// Remove the check that skips already updated rows
+// if (percentCell.dataset && percentCell.dataset.real === "true") {
+// return;
+// }
 const promise = fetchFundRealPercent(code).then(percent => {
         const value = formatNumber(percent);
         percentCell.textContent = `${value}%(实)`;
@@ -1257,6 +1265,14 @@ return Promise.all(promises).then(results => {
       }
     });
     savePercentStatusToStorage(statusMap);
+    
+    // Re-apply sort if active
+    if (percentSortOrder) {
+      sortTableBy("percent", percentSortOrder);
+    } else if (profitSortOrder) {
+      sortTableBy("profit", profitSortOrder);
+    }
+    
     return { anySuccess: successCount > 0, allDone };
   });
 }
@@ -1290,17 +1306,26 @@ function isAfterRealUpdateTime() {
   return t >= start && t < end;
 }
 
-function triggerRealUpdateIfNeeded() {
-  if (realUpdateDone) {
-    return;
+const fetchButton = document.getElementById("fetch-percent-btn");
+  
+  function triggerRealUpdateIfNeeded() {
+   if (fetchButton) {
+   fetchButton.disabled = true;
+   const icon = fetchButton.querySelector(".refresh-icon");
+   if (icon) icon.classList.add("spinning");
+   }
+   
+    fetchRealPercentagesForAllFunds().then(result => {
+      if (result && result.allDone) {
+        realUpdateDone = true;
+      }
+      if (fetchButton) {
+        fetchButton.disabled = false;
+        const icon = fetchButton.querySelector(".refresh-icon");
+        if (icon) icon.classList.remove("spinning");
+      }
+    });
   }
-  // Remove isAfterRealUpdateTime check as it's handled by caller via getAppStatus
-  fetchRealPercentagesForAllFunds().then(result => {
-    if (result && result.allDone) {
-      realUpdateDone = true;
-    }
-  });
-}
 
 function setupDailyRealUpdateScheduler() {
   if (!isChromeExtensionEnv()) {
@@ -1580,8 +1605,7 @@ let remainingSeconds = autoRefreshSeconds;
       const isNightOrMorning = (t >= 18 * 60) || (t < 9 * 60 + 20);
       
       if (status === APP_STATE.REAL || isNightOrMorning) {
-        // Manually trigger real update, resetting the 'done' flag to allow re-fetch
-        realUpdateDone = false; 
+        // Manually trigger real update
         triggerRealUpdateIfNeeded();
       } else {
         // Default to estimate
@@ -1593,11 +1617,29 @@ let remainingSeconds = autoRefreshSeconds;
   }
 setupDailyRealUpdateScheduler();
   
-  // Initial fetch if needed
-  if (shouldShowEstimateOnly()) {
-    // Only fetch estimate if we are in ESTIMATE state, otherwise we might overwrite real values or fetch when paused
-    if (getAppStatus() === APP_STATE.ESTIMATE) {
-       autoFetchPercentages({ useButton: false, showAlert: false });
+  // Initial fetch: Always try to fetch data on app open based on current status
+  const currentStatus = getAppStatus();
+  const currentMinutes = getCurrentMinutes();
+  
+  if (currentStatus === APP_STATE.ESTIMATE) {
+    // Trading hours: fetch estimates
+    autoFetchPercentages({ useButton: false, showAlert: false });
+  } else if (currentStatus === APP_STATE.REAL) {
+    // Evening hours: fetch real values
+    triggerRealUpdateIfNeeded();
+  } else {
+    // PAUSED state (e.g., morning, lunch break, weekend, or night after 22:00)
+    // Check if we should fetch real values (18:00 - 09:20 next day)
+    // This logic mirrors the manual refresh button behavior
+    const isNightOrMorning = (currentMinutes >= 18 * 60) || (currentMinutes < 9 * 60 + 20);
+    if (isNightOrMorning) {
+        triggerRealUpdateIfNeeded();
+    } else {
+       // Otherwise (e.g. 11:30-13:00 break, or weekend daytime), maybe fetch estimates just in case?
+       // Let's safe fetch estimates if it's a trading day, even if technically paused
+       if (isTradingDay()) {
+           autoFetchPercentages({ useButton: false, showAlert: false });
+       }
     }
   }
 
@@ -1611,6 +1653,8 @@ setupDailyRealUpdateScheduler();
       if (status === APP_STATE.PAUSED) {
         shouldCountdown = false;
       } else if (status === APP_STATE.REAL && realUpdateDone) {
+        // Once real update is done, we stop auto-countdown to save resources.
+        // Manual refresh is still available as blocked checks were removed.
         shouldCountdown = false;
       }
 

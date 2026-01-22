@@ -483,3 +483,25 @@ gap: 4px;
 .value-updated {
   animation: highlight-fade 1.5s ease-out;
 }
+
+.header-title-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.text-link-btn {
+  font-size: 12px;
+  color: #60a5fa;
+  text-decoration: none;
+  font-weight: 400;
+  transition: all 0.2s;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background-color: transparent;
+}
+
+.text-link-btn:hover {
+  color: #3b82f6;
+  background-color: #eff6ff;
+}
