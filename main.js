@@ -1205,22 +1205,63 @@ if (percentSortOrder) {
 }
 
 function fetchRealPercentagesForAllFunds() {
-const rows = getFundRows();
-const promises = [];
-rows.forEach(row => {
-const code = getFundCodeFromRow(row);
-if (!code) {
-return;
-}
-const percentCell = row.querySelector('td[data-role="percent-cell"] span');
-if (!percentCell) {
-return;
-}
-// Remove the check that skips already updated rows
-// if (percentCell.dataset && percentCell.dataset.real === "true") {
-// return;
-// }
-const promise = fetchFundRealPercent(code).then(percent => {
+  const rows = getFundRows();
+  const promises = [];
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, "0");
+  const day = String(today.getDate()).padStart(2, "0");
+  const todayStr = `${year}-${month}-${day}`;
+  
+  // Calculate last trading day (approximate)
+  // If today is Mon-Fri, expected date is today.
+  // If today is Sat/Sun, expected date is last Friday.
+  // Actually, we just need to know if the returned date is "recent enough".
+  // Stricter rule: if today is a trading day, date MUST be today.
+  // If today is weekend, date MUST be last Friday.
+  
+  let expectedDateStr = todayStr;
+  const dayOfWeek = today.getDay();
+  if (dayOfWeek === 0) { // Sunday
+    const d = new Date(today);
+    d.setDate(today.getDate() - 2);
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const dy = String(d.getDate()).padStart(2, "0");
+    expectedDateStr = `${d.getFullYear()}-${m}-${dy}`;
+  } else if (dayOfWeek === 6) { // Saturday
+    const d = new Date(today);
+    d.setDate(today.getDate() - 1);
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const dy = String(d.getDate()).padStart(2, "0");
+    expectedDateStr = `${d.getFullYear()}-${m}-${dy}`;
+  }
+
+  rows.forEach(row => {
+    const code = getFundCodeFromRow(row);
+    if (!code) {
+      return;
+    }
+    const percentCell = row.querySelector('td[data-role="percent-cell"] span');
+    if (!percentCell) {
+      return;
+    }
+
+    // Chain fetchFundInfo first to check date
+    const promise = fetchFundInfo(code).then(info => {
+      // If we failed to get info or jzrq, treat as date mismatch
+      // But if info is null/undefined, it might be a network error or parsing error.
+      // If fetchFundInfo fails, it rejects, so we land in .catch block of this promise.
+      if (!info || !info.jzrq) {
+        throw new Error("Cannot verify date");
+      }
+      
+      if (info.jzrq !== expectedDateStr) {
+         // Date mismatch, data is old.
+         throw new Error("Data not updated yet");
+       }
+       
+       return fetchFundRealPercent(code);
+    }).then(percent => {
         const value = formatNumber(percent);
         percentCell.textContent = `${value}%(实)`;
         applyProfitColor(percentCell, percent);
@@ -1228,13 +1269,35 @@ const promise = fetchFundRealPercent(code).then(percent => {
           percentCell.dataset.real = "true";
         }
         return true;
-      }).catch(() => false);
-promises.push(promise);
-});
-if (promises.length === 0) {
-return Promise.resolve({ anySuccess: false, allDone: true });
-}
-return Promise.all(promises).then(results => {
+      }).catch((err) => {
+        // If real update fails or date mismatch, fallback to estimate
+        // Only if we don't already have a valid value (e.g. initial load)
+        // Or should we always try to get estimate if real fails?
+        // User request: "真实涨跌未获取到时，显示预估涨跌幅"
+        // This implies if we tried to fetch REAL and failed, we should show ESTIMATE.
+        // But we might already have an estimate displayed from auto-refresh.
+        // If the cell is empty or has old data, fetch estimate.
+        
+        // Let's try to fetch estimate now as fallback
+        return fetchFundEstimate(code).then(estimate => {
+             const value = formatNumber(estimate);
+             // Don't mark as real
+             percentCell.textContent = `${value}%`;
+             applyProfitColor(percentCell, estimate);
+             if (percentCell.dataset && percentCell.dataset.real) {
+               delete percentCell.dataset.real;
+             }
+             return true;
+        }).catch(() => false);
+      });
+    promises.push(promise);
+  });
+  
+  if (promises.length === 0) {
+    return Promise.resolve({ anySuccess: false, allDone: true });
+  }
+  
+  return Promise.all(promises).then(results => {
     const successCount = results.filter(Boolean).length;
     if (successCount > 0) {
       scheduleProfit();
