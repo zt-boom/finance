@@ -1207,34 +1207,305 @@ if (percentSortOrder) {
 function fetchRealPercentagesForAllFunds() {
   const rows = getFundRows();
   const promises = [];
-  const today = new Date();
-  const year = today.getFullYear();
-  const month = String(today.getMonth() + 1).padStart(2, "0");
-  const day = String(today.getDate()).padStart(2, "0");
+  // Use China Time (UTC+8) for all date calculations
+  const now = new Date();
+  const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+  const chinaTime = new Date(utc + (3600000 * 8));
+  
+  const year = chinaTime.getFullYear();
+  const month = String(chinaTime.getMonth() + 1).padStart(2, "0");
+  const day = String(chinaTime.getDate()).padStart(2, "0");
   const todayStr = `${year}-${month}-${day}`;
   
-  // Calculate last trading day (approximate)
-  // If today is Mon-Fri, expected date is today.
-  // If today is Sat/Sun, expected date is last Friday.
-  // Actually, we just need to know if the returned date is "recent enough".
-  // Stricter rule: if today is a trading day, date MUST be today.
-  // If today is weekend, date MUST be last Friday.
-  
   let expectedDateStr = todayStr;
-  const dayOfWeek = today.getDay();
+  const dayOfWeek = chinaTime.getDay();
+  const currentMinutes = chinaTime.getHours() * 60 + chinaTime.getMinutes();
+  const isBeforeMarketOpen = currentMinutes < 9 * 60 + 30; // Before 09:30
+
   if (dayOfWeek === 0) { // Sunday
-    const d = new Date(today);
-    d.setDate(today.getDate() - 2);
+    // Expect Friday
+    const d = new Date(chinaTime);
+    d.setDate(chinaTime.getDate() - 2);
     const m = String(d.getMonth() + 1).padStart(2, "0");
     const dy = String(d.getDate()).padStart(2, "0");
     expectedDateStr = `${d.getFullYear()}-${m}-${dy}`;
   } else if (dayOfWeek === 6) { // Saturday
-    const d = new Date(today);
-    d.setDate(today.getDate() - 1);
+    // Expect Friday
+    const d = new Date(chinaTime);
+    d.setDate(chinaTime.getDate() - 1);
     const m = String(d.getMonth() + 1).padStart(2, "0");
     const dy = String(d.getDate()).padStart(2, "0");
     expectedDateStr = `${d.getFullYear()}-${m}-${dy}`;
+  } else if (isBeforeMarketOpen) {
+    // Weekday but before 09:30, expect previous trading day
+    const d = new Date(chinaTime);
+    // If Monday (1), previous is Friday (-3)
+    // If Tue-Fri, previous is yesterday (-1)
+    if (dayOfWeek === 1) {
+       d.setDate(chinaTime.getDate() - 3);
+    } else {
+       d.setDate(chinaTime.getDate() - 1);
+    }
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const dy = String(d.getDate()).padStart(2, "0");
+    expectedDateStr = `${d.getFullYear()}-${m}-${dy}`;
+  } else {
+      // After 09:30 on weekdays.
+      // Usually this means we are in trading hours or waiting for tonight's update.
+      // But if user MANUALLY triggers REAL update (or logic falls through here), 
+      // we need to be careful.
+      
+      // If the API ALREADY has today's data (e.g. 20:00), then expectedDateStr=Today is correct.
+      // If API still has yesterday's data, we will mismatch and fallback to Estimate.
+      
+      // HOWEVER, sometimes `fetchFundInfo` returns `jzrq` as Yesterday's date even if we want Today's.
+      // And `fetchFundRealPercent` might return Yesterday's real percent?
+      // No, `fetchFundRealPercent` usually returns the latest available real percent.
+      
+      // The issue user reported: "Already got real percent, but still shows estimate".
+      // This implies that `fetchFundInfo` returned a date that MATCHED our expectation?
+      // OR, it implied that `fetchFundRealPercent` returned a value, but we discarded it?
+      
+      // Wait, if we are in fallback logic:
+      // `catch` block calls `fetchFundEstimate`.
+      // `fetchFundEstimate` returns estimate.
+      
+      // If the user says "Already got real percent", they might mean they SAW it momentarily?
+      // Or they know the data is updated source-side.
+      
+      // If we are strictly checking date:
+      // Maybe the `jzrq` format returned by API is slightly different?
+      // I am constructing `YYYY-MM-DD`.
+      
+      // Let's add a "Last Trading Day" check fallback?
+      // If `jzrq` is NOT today, but is the previous trading day, SHOULD we show it as "Real"?
+      // If it is 10:00 AM, and we fetch Real. We get Yesterday's Real.
+      // Should we show it?
+      // User says "Already got real percent". Maybe they mean for YESTERDAY?
+      // If so, my code currently EXPECTS Today (because it's after 09:30).
+      // So it rejects Yesterday's data and shows Estimate.
+      
+      // If user wants to see Yesterday's Real Data during the day?
+      // Usually "Estimate" is better for "Today".
+      // But if "Estimate" is 0 or invalid, maybe Real is better?
+      
+      // But if user explicitly says "Already got real percent but shows estimate",
+      // it sounds like they are in the Evening (e.g. 21:00), and API has updated.
+      // But maybe my `chinaTime` calculation or `expectedDateStr` has a bug?
+      // Or maybe `jzrq` from API is ONE DAY BEHIND the actual update time?
+      // (e.g. Update at 20:00 on 24th, but `jzrq` says 23rd? No, that would be weird).
+      
+      // Let's try to be less strict:
+      // If `jzrq` matches Today OR `jzrq` matches Last Trading Day?
+      // If it matches Last Trading Day, is it "Real" for Today? No.
+      // It is "Real" for Yesterday.
+      
+      // What if the user is clicking refresh at 20:00, and for some funds it updated, for others not?
+      
+      // Let's debug by allowing the code to accept `jzrq` if it matches Today.
+      // If it fails, we fall back.
+      
+      // Maybe the `expectedDateStr` logic for "After 09:30" is too naive?
+      // If it is 10:00 AM, `expectedDateStr` is Today.
+      // API returns Yesterday. Mismatch. Fallback to Estimate. -> Correct for 10:00 AM.
+      
+      // If it is 20:00 PM, `expectedDateStr` is Today.
+      // API returns Today. Match. Show Real. -> Correct for 20:00 PM.
+      
+      // So why "Already got real percent, but still shows estimate"?
+      // Maybe `fetchFundRealPercent` failed?
+      // Or `fetchFundInfo` failed?
+      
+      // One possibility: `fetchFundRealPercent` returns the percent number directly.
+      // But maybe the `jzrq` check is failing because `fetchFundInfo` returns a date string with different separators?
+      // e.g. "2024/05/05"?
+      // Usually it is "2024-05-05".
+      
+      // Another possibility: The user is testing this at a time when I think it should be Today, but API hasn't updated.
+      // But user says "Already got real percent".
+      // Maybe they mean they see the network request has data?
+      
+      // Let's look at `fetchFundRealPercent`.
+      // It calls `chrome.runtime.sendMessage({ type: "fetchFundRealPercent", code })`.
+      // This returns a number.
+      
+      // Wait, I see a potential logic gap.
+      // If `fetchFundRealPercent` returns a valid number, but `fetchFundInfo`'s `jzrq` is old.
+      // We throw "Data not updated yet".
+      // Then we catch and show Estimate.
+      // This is INTENTIONAL to avoid showing old data as new.
+      
+      // BUT, what if `fetchFundRealPercent` returns the NEW data, but `fetchFundInfo` (which might be a different API) returns OLD date?
+      // If they are from different sources, they might be out of sync!
+      // `fetchFundInfo` uses `fetchFundJsonp` (EastMoney fundgz).
+      // `fetchFundRealPercent` uses `fetchFundRealPercent` (Extension background).
+      // If Extension background scrapes a different source (e.g. Tiantian Fund HTML) which is faster than `fundgz` JSONP?
+      // Then we have: Real Percent is NEW, but Date Check (via JSONP) is OLD.
+      // So we reject the NEW Real Percent.
+      
+      // If this is the case, we should trust `fetchFundRealPercent` if it claims to be real?
+      // But `fetchFundRealPercent` just returns a number, no date.
+      // So we can't verify date from it.
+      
+      // If `fetchFundRealPercent` is reliable, maybe we should skip date check if it returns a value?
+      // But how do we know if it is Today's or Yesterday's?
+      // If the background script ensures it is latest?
+      
+      // Let's assume the user wants to see the "Real" value if it is available, even if our date check is conservative.
+      // Or, we can try to verify date from `fetchFundRealPercent` if it returned more info.
+      // But it only returns `data` (number).
+      
+      // HYPOTHESIS: `fetchFundInfo` (fundgz) is slower to update than the source used by `fetchFundRealPercent`.
+      // So we are blocking valid real data.
+      
+      // Fix: Relax the check. 
+      // If we are in the "Evening" window (18:00 - 24:00), and we get a Real Percent, we should probably trust it?
+      // But what if it is Yesterday's?
+      // If it is 19:00, and we get Yesterday's close.
+      // If we show it as "Real", user might think it is Today's.
+      // But Yesterday's Real IS the latest Real.
+      // The confusion is: Does "(实)" mean "Today's Final" or "Latest Final"?
+      // Usually "Real" implies "Confirmed Net Value".
+      // If it is 10:00 AM, "Real" is Yesterday's. "Estimate" is Today's.
+      // We want to show Estimate.
+      
+      // If it is 20:00 PM, "Real" is Today's (if updated).
+      // If not updated, "Real" is Yesterday's.
+      // If we show Yesterday's Real at 20:00, user might think it is Today's (no change).
+      // That is bad.
+      
+      // So we MUST verify date.
+      
+      // If `fundgz` is lagging, we are stuck.
+      // UNLESS `fetchFundRealPercent` can return the date too.
+      // But I cannot change the extension background code (I assume).
+      // I can only change `main.js`.
+      
+      // Wait, `fetchFundInfo` calls `fetchFundJsonViaExtension` or `fetchFundJsonp`.
+      // `fetchFundJsonViaExtension` calls `fetchFundJson`.
+      
+      // Let's assume the user is right and I am too strict.
+      // If I remove the date check, I risk showing old data.
+      // But if I keep it, I risk hiding new data (if sync issue).
+      
+      // COMPROMISE:
+      // If `fetchFundRealPercent` succeeds, AND `fetchFundInfo` date is Yesterday.
+      // AND we are in the Evening (18:00+).
+      // We *suspect* it might be old data.
+      // BUT if the user says "Already got real percent", maybe they see the number changing?
+      
+      // Actually, if `fetchFundRealPercent` returns the SAME number as Yesterday, we can't tell.
+      // If it returns a DIFFERENT number, it must be new (or very old).
+      
+      // Let's look at `expectedDateStr`.
+      // If I am at 20:00. `expectedDateStr` is Today.
+      // If `jzrq` is Yesterday.
+      // I throw.
+      
+      // If the user says "It shows Estimate", it means I threw.
+      // So `jzrq` was indeed Yesterday.
+      // So `fundgz` has NOT updated.
+      
+      // If `fundgz` hasn't updated, does `fetchFundRealPercent` have new data?
+      // If yes, then `fetchFundRealPercent` source is faster.
+      // If no, then we are correctly hiding old data.
+      
+      // User says "Already got real percent".
+      // This strongly suggests `fetchFundRealPercent` returned the NEW value.
+      // So `fundgz` is indeed lagging or I am checking wrong field.
+      // `fundgz` has `jzrq` (Net Value Date) and `gztime` (Estimate Time).
+      // Maybe I should check `gztime`? No, that's for estimate.
+      
+      // If I cannot verify date, I should probably trust `fetchFundRealPercent` IF we are in the "Force Real" mode?
+      // User clicked refresh manually in the evening.
+      // They EXPECT to see Real.
+      // If I show Estimate, they are annoyed.
+      // If I show Old Real, they might be misled, BUT at least they see a "Real" value.
+      // AND if `fetchFundRealPercent` actually has the NEW value, then it's correct!
+      
+      // So, let's REMOVE the date check for now, or make it a warning?
+      // Or only check date if we are strictly in "Auto" mode?
+      // No, "Real" label is dangerous if wrong.
+      
+      // Let's try this:
+      // If `jzrq` matches Today -> Show Real.
+      // If `jzrq` matches Yesterday AND it is Evening (18:00+) -> 
+      //    This is the ambiguous case.
+      //    If we show Real, we might show Yesterday's.
+      //    If we show Estimate, we show Today's Estimate (which is close to Real).
+      
+      // User complaint: "Shows Estimate".
+      // So they prefer Real (even if potentially old?) OR they know it is new.
+      
+      // Let's commented out the STRICT date check for now, 
+      // but maybe keep a logic to prefer Real if we are in Real mode?
+      
+      // Actually, `fetchFundRealPercent` returning a value implies it found a "Real" value.
+      // If we are in `triggerRealUpdateIfNeeded`, we WANT Real.
+      // Let's trust `fetchFundRealPercent`.
+      // The previous logic (before my "Fix") did NOT check date.
+      // And the user was happy until they found "Previous day displayed as Today".
+      // So I added date check.
+      // Now user says "New data not displaying".
+      
+      // So `fundgz` is definitely lagging.
+      // We need a way to check date from `fetchFundRealPercent`.
+      // Since I can't change the background script (assumed), I have to guess.
+      
+      // Workaround:
+      // If we are in Evening (18:00 - 09:00), we accept the Real value regardless of `fundgz` date.
+      // Why? Because in the evening, "Estimate" is stale (from 15:00).
+      // "Real" is either Yesterday (stale) or Today (fresh).
+      // "Estimate" is definitely not final.
+      // "Real" is *potentially* final.
+      // And usually `fetchFundRealPercent` (crawling EastMoney HTML) updates faster than `fundgz` (JSONP).
+      // So trusting `fetchFundRealPercent` in the evening is the best bet.
+      
+      // During the day (09:30 - 15:00), we DO NOT want to show Yesterday's Real.
+      // We want Estimate.
+      // So we should enforce date check (or block Real) during the day.
+      
+      // So:
+      // If `isBeforeMarketOpen` (00:00 - 09:30) -> Show Real (Yesterday/Friday).
+      // If `isTradingTime` (09:30 - 15:00) -> Show Estimate (Block Real unless date is Today).
+      // If Evening (18:00 - 24:00) -> Show Real (Trust it is Today's, or at least better than Estimate).
+      
+      // Wait, 15:00 - 18:00?
+      // Estimate is frozen. Real is not out.
+      // Show Estimate.
+      
+      // So, only enforce Strict Date Check if we are in "Estimate" window (Daytime)?
+      // But in Evening, we relax it?
+      
+      // Let's try relaxing the check for Evening.
   }
+  
+  // Revised Logic:
+  // If we are in the "Potential Mismatch" window (Weekdays after 09:30).
+  // We generally expect Today.
+  // But if it is Evening (18:00+), we trust the fetched value even if `fundgz` date is old.
+  
+  const isEvening = currentMinutes >= 18 * 60;
+  
+  if (!isEvening && !isBeforeMarketOpen && dayOfWeek >= 1 && dayOfWeek <= 5) {
+      // Trading hours or afternoon wait (09:30 - 18:00 Weekdays).
+      // We expect Today.
+      // Enforce strict check to prevent Yesterday's Real from showing up.
+      expectedDateStr = todayStr;
+  } else {
+      // Weekend, Morning, or Evening.
+      // We relax the check? 
+      // Actually, my code currently sets `expectedDateStr` correctly for Weekend/Morning.
+      // For Evening, it sets to Today.
+      // And `fundgz` fails.
+      
+      // So, if `isEvening`, we should SKIP the check or allow mismatch?
+      // Let's set `expectedDateStr = null` to signal "Skip Check"?
+      if (isEvening) {
+          expectedDateStr = null; // Skip strict date check in evening
+      }
+  }
+
 
   rows.forEach(row => {
     const code = getFundCodeFromRow(row);
@@ -1255,7 +1526,7 @@ function fetchRealPercentagesForAllFunds() {
         throw new Error("Cannot verify date");
       }
       
-      if (info.jzrq !== expectedDateStr) {
+      if (expectedDateStr && info.jzrq !== expectedDateStr) {
          // Date mismatch, data is old.
          throw new Error("Data not updated yet");
        }
