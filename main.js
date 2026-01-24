@@ -190,15 +190,21 @@ const APP_STATE = {
   PAUSED: "PAUSED"
 };
 
-function getCurrentMinutes() {
+function getChinaDate() {
   const now = new Date();
+  const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+  return new Date(utc + (3600000 * 8));
+}
+
+function getCurrentMinutes() {
+  const now = getChinaDate();
   const h = now.getHours();
   const m = now.getMinutes();
   return h * 60 + m;
 }
 
 function getAppStatus() {
-  const now = new Date();
+  const now = getChinaDate();
   const day = now.getDay();
 
   // Special handling for Friday night extending into Saturday morning?
@@ -208,7 +214,7 @@ function getAppStatus() {
       return APP_STATE.PAUSED;
   }
 
-  const t = getCurrentMinutes();
+  const t = now.getHours() * 60 + now.getMinutes();
 
   // 09:20 - 15:10 ESTIMATE (Continuous window as requested)
   // Actually usually 11:30-13:00 is break, but user said "9:20-15:10"
@@ -233,7 +239,7 @@ function isTradingTime() {
 }
 
 function isTradingDay() {
-  const day = new Date().getDay();
+  const day = getChinaDate().getDay();
   return day !== 0 && day !== 6;
 }
 
@@ -241,7 +247,7 @@ function shouldShowEstimateOnly() {
   if (!isTradingDay()) {
     return false;
   }
-  const now = new Date();
+  const now = getChinaDate();
   const h = now.getHours();
   // 9:00之后只展示当日的预估值
   return h >= 9;
@@ -381,14 +387,14 @@ updateRowIndices();
 }
 
 function getTodayDateString() {
-const now = new Date();
-const year = String(now.getFullYear());
-const month = String(now.getMonth() + 1).padStart(2, "0");
-const day = String(now.getDate()).padStart(2, "0");
-const hours = String(now.getHours()).padStart(2, "0");
-const minutes = String(now.getMinutes()).padStart(2, "0");
-const seconds = String(now.getSeconds()).padStart(2, "0");
-return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+  const now = getChinaDate();
+  const year = String(now.getFullYear());
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  const hours = String(now.getHours()).padStart(2, "0");
+  const minutes = String(now.getMinutes()).padStart(2, "0");
+  const seconds = String(now.getSeconds()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
 const fundJsonpMap = new Map();
@@ -1208,9 +1214,7 @@ function fetchRealPercentagesForAllFunds() {
   const rows = getFundRows();
   const promises = [];
   // Use China Time (UTC+8) for all date calculations
-  const now = new Date();
-  const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
-  const chinaTime = new Date(utc + (3600000 * 8));
+  const chinaTime = getChinaDate();
   
   const year = chinaTime.getFullYear();
   const month = String(chinaTime.getMonth() + 1).padStart(2, "0");
@@ -1631,7 +1635,7 @@ element.classList.add("value-zero");
 let realUpdateDone = false;
 
 function isAfterRealUpdateTime() {
-  const now = new Date();
+  const now = getChinaDate();
   const h = now.getHours();
   const m = now.getMinutes();
   const t = h * 60 + m;
@@ -1938,7 +1942,7 @@ let remainingSeconds = autoRefreshSeconds;
       
       const isNightOrMorning = (t >= 18 * 60) || (t < 9 * 60 + 20);
       
-      if (status === APP_STATE.REAL || isNightOrMorning) {
+      if (status === APP_STATE.REAL || isNightOrMorning || !isTradingDay()) {
         // Manually trigger real update
         triggerRealUpdateIfNeeded();
       } else {
@@ -1963,13 +1967,13 @@ setupDailyRealUpdateScheduler();
     triggerRealUpdateIfNeeded();
   } else {
     // PAUSED state (e.g., morning, lunch break, weekend, or night after 22:00)
-    // Check if we should fetch real values (18:00 - 09:20 next day)
+    // Check if we should fetch real values (18:00 - 09:20 next day) OR if it is a non-trading day (Weekend)
     // This logic mirrors the manual refresh button behavior
     const isNightOrMorning = (currentMinutes >= 18 * 60) || (currentMinutes < 9 * 60 + 20);
-    if (isNightOrMorning) {
+    if (isNightOrMorning || !isTradingDay()) {
         triggerRealUpdateIfNeeded();
     } else {
-       // Otherwise (e.g. 11:30-13:00 break, or weekend daytime), maybe fetch estimates just in case?
+       // Otherwise (e.g. 11:30-13:00 break on weekdays)
        // Let's safe fetch estimates if it's a trading day, even if technically paused
        if (isTradingDay()) {
            autoFetchPercentages({ useButton: false, showAlert: false });
