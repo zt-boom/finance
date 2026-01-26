@@ -398,7 +398,7 @@ function getTodayDateString() {
 }
 
 const fundJsonpMap = new Map();
-let isFetchingPercentages = false;
+let isGlobalFetching = false;
 
 function isChromeExtensionEnv() {
 if (typeof chrome === "undefined") {
@@ -460,7 +460,7 @@ if (chrome.runtime.lastError) {
 reject(new Error("获取基金真实涨跌幅失败"));
 return;
 }
-if (!response || !response.ok || typeof response.data !== "number") {
+if (!response || !response.ok || typeof response.data !== "number" || Number.isNaN(response.data)) {
 const message = response && response.error ? response.error : "获取基金真实涨跌幅失败";
 reject(new Error(message));
 return;
@@ -1106,7 +1106,7 @@ chrome.runtime.sendMessage({ type: "updateBadge", text, color });
 }
 
 function autoFetchPercentages(options) {
-  if (isFetchingPercentages) {
+  if (isGlobalFetching) {
     return;
   }
   const useButton = !options || options.useButton !== false;
@@ -1184,9 +1184,9 @@ return;
   const icon = fetchButton.querySelector(".refresh-icon");
   if (icon) icon.classList.add("spinning");
   }
-  isFetchingPercentages = true;
+  isGlobalFetching = true;
   Promise.all(promises).then(results => {
-  isFetchingPercentages = false;
+  isGlobalFetching = false;
   const successCount = results.filter(Boolean).length;
   if (fetchButton) {
   fetchButton.disabled = false;
@@ -1530,7 +1530,8 @@ function fetchRealPercentagesForAllFunds() {
         throw new Error("Cannot verify date");
       }
       
-      if (expectedDateStr && info.jzrq !== expectedDateStr) {
+      const jzrq = info.jzrq.replace(/\//g, "-");
+      if (expectedDateStr && jzrq !== expectedDateStr) {
          // Date mismatch, data is old.
          throw new Error("Data not updated yet");
        }
@@ -1644,16 +1645,27 @@ function isAfterRealUpdateTime() {
   return t >= start && t < end;
 }
 
+function isManualRealFetchTime() {
+  const t = getCurrentMinutes();
+  // 18:00 - 09:20 next day
+  return (t >= 18 * 60) || (t < 9 * 60 + 20);
+}
+
 const fetchButton = document.getElementById("fetch-percent-btn");
   
   function triggerRealUpdateIfNeeded() {
+   if (isGlobalFetching) {
+     return;
+   }
    if (fetchButton) {
    fetchButton.disabled = true;
    const icon = fetchButton.querySelector(".refresh-icon");
    if (icon) icon.classList.add("spinning");
    }
    
+    isGlobalFetching = true;
     fetchRealPercentagesForAllFunds().then(result => {
+      isGlobalFetching = false;
       if (result && result.allDone) {
         realUpdateDone = true;
       }
@@ -1935,12 +1947,7 @@ let remainingSeconds = autoRefreshSeconds;
       //   - Otherwise (e.g. 11:30-13:00 or 15:00-20:00), default to ESTIMATE or REAL? 
       //     Let's stick to the rule: 20:00 - 09:00 -> REAL, others -> ESTIMATE
       
-      const t = getCurrentMinutes();
-      
-      // Check for 18:00 to 09:20 (next day) window for Manual REAL fetch
-      // 18:00 - 22:00 is covered by APP_STATE.REAL usually
-      
-      const isNightOrMorning = (t >= 18 * 60) || (t < 9 * 60 + 20);
+      const isNightOrMorning = isManualRealFetchTime();
       
       if (status === APP_STATE.REAL || isNightOrMorning || !isTradingDay()) {
         // Manually trigger real update
@@ -1957,7 +1964,7 @@ setupDailyRealUpdateScheduler();
   
   // Initial fetch: Always try to fetch data on app open based on current status
   const currentStatus = getAppStatus();
-  const currentMinutes = getCurrentMinutes();
+  // const currentMinutes = getCurrentMinutes(); // Removed unused
   
   if (currentStatus === APP_STATE.ESTIMATE) {
     // Trading hours: fetch estimates
@@ -1969,7 +1976,7 @@ setupDailyRealUpdateScheduler();
     // PAUSED state (e.g., morning, lunch break, weekend, or night after 22:00)
     // Check if we should fetch real values (18:00 - 09:20 next day) OR if it is a non-trading day (Weekend)
     // This logic mirrors the manual refresh button behavior
-    const isNightOrMorning = (currentMinutes >= 18 * 60) || (currentMinutes < 9 * 60 + 20);
+    const isNightOrMorning = isManualRealFetchTime();
     if (isNightOrMorning || !isTradingDay()) {
         triggerRealUpdateIfNeeded();
     } else {
@@ -1986,6 +1993,12 @@ setupDailyRealUpdateScheduler();
       dateElement.textContent = getTodayDateString();
       
       const status = getAppStatus();
+      
+      // Reset realUpdateDone if we enter ESTIMATE mode (new trading day started)
+      if (status === APP_STATE.ESTIMATE && realUpdateDone) {
+        realUpdateDone = false;
+      }
+      
       let shouldCountdown = true;
       
       if (status === APP_STATE.PAUSED) {
