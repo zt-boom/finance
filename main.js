@@ -1,8 +1,382 @@
-const STORAGE_KEY = "fund_holdings_v1";
-const STORAGE_KEY_PERCENT = "fund_percent_status_v1";
+import {
+  formatCurrency,
+  formatNumber,
+  createDebounced,
+  getChinaDate,
+  getCurrentMinutes,
+  isTradingDay,
+  parseFundCodeFromName,
+  getTodayDateString,
+  isChromeExtensionEnv
+} from './utils.js';
+
+import {
+  loadHoldingsFromStorage,
+  saveHoldingsToStorage,
+  loadPercentStatusFromStorage,
+  savePercentStatusToStorage,
+  loadSortStatusFromStorage,
+  saveSortStatusToStorage
+} from './storage.js';
+
+import {
+  fetchFundRealPercent,
+  fetchFundEstimate,
+  fetchFundInfo,
+  updateExtensionBadge
+} from './api.js';
+
 let dragSourceRow = null;
+let isGlobalFetching = false;
+let realUpdateDone = false;
+let originalOrderSnapshot = null;
+
+let totalZfbAmountElement = null;
+let totalStockAmountElement = null;
+let totalAmountElement = null;
+let totalPercentElement = null;
+let totalZfbProfitElement = null;
+let totalStockProfitElement = null;
+let totalProfitElement = null;
+let percentHeader = null;
+let profitHeader = null;
+let percentSortOrder = null;
+let profitSortOrder = null;
+
+const basePercentHeaderText = "预估涨跌(%)";
+const baseProfitHeaderText = "预估收益(元)";
+
+const APP_STATE = {
+  ESTIMATE: "ESTIMATE",
+  REAL: "REAL",
+  PAUSED: "PAUSED"
+};
 
 const handleDebouncedStorageUpdate = createDebounced(handleStorageUpdate, 500);
+const scheduleProfit = createDebounced(calculateProfit, 60);
+
+// --- UI Helpers ---
+
+function getFundTableBody() {
+  return document.getElementById("fund-table-body");
+}
+
+function getFundRows() {
+  const tbody = getFundTableBody();
+  if (!tbody) {
+    return [];
+  }
+  return Array.from(tbody.querySelectorAll('tr[data-role="fund-row"]'));
+}
+
+function getFundRowInputs(row) {
+  const inputs = row.querySelectorAll("input");
+  return {
+    nameInput: inputs[0] || null,
+    zfbInput: inputs[1] || null,
+    stockInput: inputs[2] || null
+  };
+}
+
+function getFundCodeFromRow(row) {
+  const inputs = getFundRowInputs(row);
+  const name = inputs.nameInput ? inputs.nameInput.value.trim() : "";
+  return parseFundCodeFromName(name);
+}
+
+function getCurrentRows() {
+  return getFundRows();
+}
+
+function updateRowIndices() {
+  const rows = getFundRows();
+  rows.forEach((row, index) => {
+    const indexCell = row.querySelector('td[data-role="row-index"]');
+    if (indexCell) {
+      indexCell.textContent = String(index + 1);
+    }
+  });
+}
+
+function updateAndFlash(element, newValueString) {
+  if (!element) return;
+  if (element.textContent !== newValueString) {
+    element.textContent = newValueString;
+    const parent = element.parentElement;
+    if (parent) {
+      parent.classList.remove("value-updated");
+      void parent.offsetWidth; // trigger reflow
+      parent.classList.add("value-updated");
+    }
+  }
+}
+
+function applyProfitColor(element, value) {
+  if (!element) {
+    return;
+  }
+  element.classList.remove("value-positive", "value-negative", "value-zero");
+  if (Number.isNaN(value)) {
+    return;
+  }
+  if (value > 0) {
+    element.classList.add("value-positive");
+  } else if (value < 0) {
+    element.classList.add("value-negative");
+  } else {
+    element.classList.add("value-zero");
+  }
+}
+
+function updateSortHeaderUI() {
+  if (percentHeader) {
+    percentHeader.textContent = basePercentHeaderText;
+    percentHeader.classList.remove("sort-asc", "sort-desc");
+    if (percentSortOrder) {
+      percentHeader.classList.add(percentSortOrder === "asc" ? "sort-asc" : "sort-desc");
+    }
+    const s = percentHeader.querySelector(".sort-state");
+    if (s) {
+      if (!percentSortOrder) {
+        s.textContent = "不排序";
+      } else if (percentSortOrder === "desc") {
+        s.textContent = "从高到低";
+      } else {
+        s.textContent = "从低到高";
+      }
+    }
+  }
+  if (profitHeader) {
+    profitHeader.textContent = baseProfitHeaderText;
+    profitHeader.classList.remove("sort-asc", "sort-desc");
+    if (profitSortOrder) {
+      profitHeader.classList.add(profitSortOrder === "asc" ? "sort-asc" : "sort-desc");
+    }
+    const s = profitHeader.querySelector(".sort-state");
+    if (s) {
+      if (!profitSortOrder) {
+        s.textContent = "不排序";
+      } else if (profitSortOrder === "desc") {
+        s.textContent = "从高到低";
+      } else {
+        s.textContent = "从低到高";
+      }
+    }
+  }
+}
+
+// --- Logic ---
+
+function getAppStatus() {
+  const now = getChinaDate();
+  const day = now.getDay();
+
+  if (day === 0 || day === 6) {
+    return APP_STATE.PAUSED;
+  }
+
+  const t = now.getHours() * 60 + now.getMinutes();
+
+  if (t >= 9 * 60 + 20 && t < 15 * 60 + 10) {
+    return APP_STATE.ESTIMATE;
+  }
+
+  if (t >= 18 * 60 && t < 22 * 60) {
+    return APP_STATE.REAL;
+  }
+
+  return APP_STATE.PAUSED;
+}
+
+function shouldShowEstimateOnly() {
+  if (!isTradingDay()) {
+    return false;
+  }
+  const now = getChinaDate();
+  const h = now.getHours();
+  // 9:00之后只展示当日的预估值
+  return h >= 9;
+}
+
+function isManualRealFetchTime() {
+  const t = getCurrentMinutes();
+  // 18:00 - 09:20 next day
+  return (t >= 18 * 60) || (t < 9 * 60 + 20);
+}
+
+function tryFetchFundByInput(nameInput, options) {
+  const showAlertOnMissing = !options || options.showAlertOnMissing !== false;
+  const raw = nameInput.value.trim();
+  const resolvedPattern = /^\d{6}\s{2}.+/;
+  if (resolvedPattern.test(raw)) {
+    return;
+  }
+  const code = parseFundCodeFromName(raw);
+  if (!code) {
+    if (showAlertOnMissing) {
+      window.alert("请先输入6位基金代码");
+    }
+    return;
+  }
+  const rows = getFundRows();
+  let duplicate = false;
+  rows.forEach(row => {
+    const inputs = row.querySelectorAll("input");
+    const otherNameInput = inputs[0];
+    if (!otherNameInput || otherNameInput === nameInput) {
+      return;
+    }
+    const otherCode = parseFundCodeFromName(otherNameInput.value.trim());
+    if (otherCode && otherCode === code) {
+      duplicate = true;
+    }
+  });
+  if (duplicate) {
+    window.alert("该基金代码已存在，请不要重复添加");
+    return;
+  }
+  nameInput.disabled = true;
+  fetchFundInfo(code).then(data => {
+    nameInput.disabled = false;
+    if (!data || !data.name) {
+      window.alert("未能获取基金名称，请检查基金代码");
+      return;
+    }
+    nameInput.value = `${code}  ${data.name}`;
+    handleStorageUpdate();
+  }).catch(() => {
+    nameInput.disabled = false;
+    window.alert("未能获取基金名称，请检查基金代码或网络连接");
+  });
+}
+
+function calculateProfit() {
+  const rows = getFundRows();
+  const updates = [];
+  let totalZfbAmount = 0;
+  let totalStockAmount = 0;
+  let totalZfbProfit = 0;
+  let totalStockProfit = 0;
+  let totalProfit = 0;
+  let totalHoldingAmount = 0;
+
+  rows.forEach(row => {
+    const inputs = getFundRowInputs(row);
+    const zfbInput = inputs.zfbInput;
+    const stockInput = inputs.stockInput;
+    const percentCell = row.querySelector('td[data-role="percent-cell"] span');
+
+    // Cache elements for write phase
+    const amountSpan = row.querySelector('span[data-role="amount-display"]');
+    const zfbProfitCell = row.querySelector('td[data-role="zfb-profit-cell"] span');
+    const stockProfitCell = row.querySelector('td[data-role="stock-profit-cell"] span');
+    const profitCell = row.querySelector('td[data-role="profit-cell"] span');
+
+    const zfbAmount = zfbInput ? parseFloat(zfbInput.value) : NaN;
+    const stockAmount = stockInput ? parseFloat(stockInput.value) : NaN;
+    const normalizedZfb = Number.isNaN(zfbAmount) ? 0 : zfbAmount;
+    const normalizedStock = Number.isNaN(stockAmount) ? 0 : stockAmount;
+    const amount = normalizedZfb + normalizedStock;
+    const percent = percentCell ? parseFloat(percentCell.textContent) : NaN;
+    const isReal = percentCell && percentCell.dataset && percentCell.dataset.real === "true";
+
+    totalZfbAmount += normalizedZfb;
+    totalStockAmount += normalizedStock;
+    if (amount > 0) {
+      totalHoldingAmount += amount;
+    }
+
+    let zfbProfit = 0;
+    let stockProfit = 0;
+    let rowProfit = 0;
+    let validCalc = false;
+
+    if (amount > 0 && !Number.isNaN(percent)) {
+      zfbProfit = normalizedZfb * percent / 100;
+      stockProfit = normalizedStock * percent / 100;
+      rowProfit = zfbProfit + stockProfit;
+      validCalc = true;
+
+      totalZfbProfit += zfbProfit;
+      totalStockProfit += stockProfit;
+      totalProfit += rowProfit;
+    }
+
+    updates.push({
+      amountSpan,
+      zfbProfitCell,
+      stockProfitCell,
+      profitCell,
+      amount,
+      zfbProfit,
+      stockProfit,
+      rowProfit,
+      validCalc,
+      isReal
+    });
+  });
+
+  updates.forEach(data => {
+    if (data.amountSpan) {
+      updateAndFlash(data.amountSpan, formatCurrency(data.amount));
+    }
+
+    if (!data.validCalc) {
+      if (data.zfbProfitCell) { updateAndFlash(data.zfbProfitCell, "0.00"); applyProfitColor(data.zfbProfitCell, 0); }
+      if (data.stockProfitCell) { updateAndFlash(data.stockProfitCell, "0.00"); applyProfitColor(data.stockProfitCell, 0); }
+      if (data.profitCell) { updateAndFlash(data.profitCell, "0.00"); applyProfitColor(data.profitCell, 0); }
+    } else {
+      if (data.zfbProfitCell) { updateAndFlash(data.zfbProfitCell, formatCurrency(data.zfbProfit)); applyProfitColor(data.zfbProfitCell, data.zfbProfit); }
+      if (data.stockProfitCell) { updateAndFlash(data.stockProfitCell, formatCurrency(data.stockProfit)); applyProfitColor(data.stockProfitCell, data.stockProfit); }
+      if (data.profitCell) {
+        const suffix = data.isReal ? "(实)" : "";
+        const newText = `${formatCurrency(data.rowProfit)}${suffix}`;
+        updateAndFlash(data.profitCell, newText);
+        applyProfitColor(data.profitCell, data.rowProfit);
+      }
+    }
+  });
+
+  const elTotalZfb = totalZfbAmountElement || document.getElementById("total-zfb-amount");
+  if (elTotalZfb) elTotalZfb.textContent = formatCurrency(totalZfbAmount);
+
+  const elTotalStock = totalStockAmountElement || document.getElementById("total-stock-amount");
+  if (elTotalStock) elTotalStock.textContent = formatCurrency(totalStockAmount);
+
+  const elTotalAmount = totalAmountElement || document.getElementById("total-amount");
+  if (elTotalAmount) elTotalAmount.textContent = formatCurrency(totalHoldingAmount);
+
+  const elTotalPercent = totalPercentElement || document.getElementById("total-percent");
+  if (elTotalPercent) {
+    const totalPercent = totalHoldingAmount > 0 ? (totalProfit / totalHoldingAmount) * 100 : 0;
+    elTotalPercent.textContent = `${formatNumber(totalPercent)}%`;
+    applyProfitColor(elTotalPercent, totalPercent);
+  }
+
+  const elTotalZfbProfit = totalZfbProfitElement || document.getElementById("total-zfb-profit");
+  if (elTotalZfbProfit) {
+    elTotalZfbProfit.textContent = formatCurrency(totalZfbProfit);
+    applyProfitColor(elTotalZfbProfit, totalZfbProfit);
+  }
+
+  const elTotalStockProfit = totalStockProfitElement || document.getElementById("total-stock-profit");
+  if (elTotalStockProfit) {
+    elTotalStockProfit.textContent = formatCurrency(totalStockProfit);
+    applyProfitColor(elTotalStockProfit, totalStockProfit);
+  }
+
+  const elTotalProfit = totalProfitElement || document.getElementById("total-profit");
+  if (elTotalProfit) {
+    elTotalProfit.textContent = formatCurrency(totalProfit);
+    applyProfitColor(elTotalProfit, totalProfit);
+  }
+
+  if (isChromeExtensionEnv()) {
+    updateExtensionBadge(totalProfit);
+  }
+}
+
+// --- Event Handlers ---
 
 function handleNameBlur(event) {
   const input = event.currentTarget;
@@ -38,47 +412,47 @@ function handleAmountChange() {
 }
 
 function handleTableClick(event) {
-const target = event.target;
-const button = target.closest("button");
-if (!button) {
-return;
-}
-const row = button.closest('tr[data-role="fund-row"]');
-if (!row) {
-return;
-}
-const action = button.dataset.action;
-if (action === "view-fund") {
-const inputs = row.querySelectorAll("input");
-const nameValue = inputs[0] ? inputs[0].value.trim() : "";
-const code = parseFundCodeFromName(nameValue);
-if (!code) {
-window.alert("请先在名称中输入包含6位基金代码的内容");
-return;
-}
-const url = `https://fund.eastmoney.com/${code}.html`;
-if (isChromeExtensionEnv()) {
-try {
-chrome.tabs.create({ url });
-} catch (e) {
-window.open(url, "_blank");
-}
-} else {
-window.open(url, "_blank");
-}
-} else if (action === "delete-fund") {
-const inputs = row.querySelectorAll("input");
-const nameValue = inputs[0] ? inputs[0].value.trim() : "";
-const zfbValue = inputs[1] ? inputs[1].value.trim() : "";
-const stockValue = inputs[2] ? inputs[2].value.trim() : "";
-const isEmptyRow = !nameValue && !zfbValue && !stockValue;
-if (!isEmptyRow && nameValue) {
-const confirmed = window.confirm("确定要删除这条持仓记录吗？");
-if (!confirmed) {
-return;
-}
-}
-row.remove();
+  const target = event.target;
+  const button = target.closest("button");
+  if (!button) {
+    return;
+  }
+  const row = button.closest('tr[data-role="fund-row"]');
+  if (!row) {
+    return;
+  }
+  const action = button.dataset.action;
+  if (action === "view-fund") {
+    const inputs = row.querySelectorAll("input");
+    const nameValue = inputs[0] ? inputs[0].value.trim() : "";
+    const code = parseFundCodeFromName(nameValue);
+    if (!code) {
+      window.alert("请先在名称中输入包含6位基金代码的内容");
+      return;
+    }
+    const url = `https://fund.eastmoney.com/${code}.html`;
+    if (isChromeExtensionEnv()) {
+      try {
+        chrome.tabs.create({ url });
+      } catch (e) {
+        window.open(url, "_blank");
+      }
+    } else {
+      window.open(url, "_blank");
+    }
+  } else if (action === "delete-fund") {
+    const inputs = row.querySelectorAll("input");
+    const nameValue = inputs[0] ? inputs[0].value.trim() : "";
+    const zfbValue = inputs[1] ? inputs[1].value.trim() : "";
+    const stockValue = inputs[2] ? inputs[2].value.trim() : "";
+    const isEmptyRow = !nameValue && !zfbValue && !stockValue;
+    if (!isEmptyRow && nameValue) {
+      const confirmed = window.confirm("确定要删除这条持仓记录吗？");
+      if (!confirmed) {
+        return;
+      }
+    }
+    row.remove();
     if (originalOrderSnapshot) {
       const idx = originalOrderSnapshot.indexOf(row);
       if (idx !== -1) {
@@ -92,791 +466,250 @@ row.remove();
 }
 
 function handleRowDragStart(event) {
-const cell = event.currentTarget;
-const row = cell.parentElement;
-dragSourceRow = row;
-row.classList.add("dragging");
-if (event.dataTransfer) {
-event.dataTransfer.effectAllowed = "move";
-event.dataTransfer.setData("text/plain", "");
-const rowRect = row.getBoundingClientRect();
-const cellRect = cell.getBoundingClientRect();
-const offsetX = (cellRect.left - rowRect.left) + (cellRect.width / 2);
-const offsetY = (cellRect.top - rowRect.top) + (cellRect.height / 2);
-event.dataTransfer.setDragImage(row, offsetX, offsetY);
-}
+  const cell = event.currentTarget;
+  const row = cell.parentElement;
+  dragSourceRow = row;
+  row.classList.add("dragging");
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", "");
+    const rowRect = row.getBoundingClientRect();
+    const cellRect = cell.getBoundingClientRect();
+    const offsetX = (cellRect.left - rowRect.left) + (cellRect.width / 2);
+    const offsetY = (cellRect.top - rowRect.top) + (cellRect.height / 2);
+    event.dataTransfer.setDragImage(row, offsetX, offsetY);
+  }
 }
 
 function handleRowDragOver(event) {
-event.preventDefault();
-if (event.dataTransfer) {
-event.dataTransfer.dropEffect = "move";
-}
+  event.preventDefault();
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "move";
+  }
 }
 
 function handleRowDrop(event) {
-event.preventDefault();
-const targetCell = event.currentTarget;
-const targetRow = targetCell.parentElement;
-if (!dragSourceRow || dragSourceRow === targetRow) {
-return;
-}
-const tbody = targetRow.parentElement;
-const rows = Array.from(tbody.querySelectorAll('tr[data-role="fund-row"]'));
-const sourceIndex = rows.indexOf(dragSourceRow);
-const targetIndex = rows.indexOf(targetRow);
-if (sourceIndex === -1 || targetIndex === -1) {
-return;
-}
-if (sourceIndex < targetIndex) {
-tbody.insertBefore(dragSourceRow, targetRow.nextSibling);
-} else {
-tbody.insertBefore(dragSourceRow, targetRow);
-}
+  event.preventDefault();
+  const targetCell = event.currentTarget;
+  const targetRow = targetCell.parentElement;
+  if (!dragSourceRow || dragSourceRow === targetRow) {
+    return;
+  }
+  const tbody = targetRow.parentElement;
+  const rows = Array.from(tbody.querySelectorAll('tr[data-role="fund-row"]'));
+  const sourceIndex = rows.indexOf(dragSourceRow);
+  const targetIndex = rows.indexOf(targetRow);
+  if (sourceIndex === -1 || targetIndex === -1) {
+    return;
+  }
+  if (sourceIndex < targetIndex) {
+    tbody.insertBefore(dragSourceRow, targetRow.nextSibling);
+  } else {
+    tbody.insertBefore(dragSourceRow, targetRow);
+  }
 }
 
 function handleRowDragEnd() {
-const rows = getFundRows();
-rows.forEach(row => {
-row.classList.remove("dragging");
-});
-dragSourceRow = null;
-updateRowIndices();
-handleStorageUpdate();
-scheduleProfit();
-}
-
-function formatCurrency(value) {
-if (Number.isNaN(value)) return "0.00";
-return value.toFixed(2);
-}
-
-function formatNumber(value) {
-if (Number.isNaN(value)) return "";
-return value.toFixed(2);
-}
-
-function createDebounced(fn, delay) {
-let timer = null;
-return function () {
-if (timer) {
-clearTimeout(timer);
-}
-timer = setTimeout(() => {
-fn();
-}, delay);
-};
-}
-
-const scheduleProfit = createDebounced(calculateProfit, 60);
-let totalZfbAmountElement = null;
-let totalStockAmountElement = null;
-let totalAmountElement = null;
-let totalPercentElement = null;
-let totalZfbProfitElement = null;
-let totalStockProfitElement = null;
-let totalProfitElement = null;
-let percentHeader = null;
-let profitHeader = null;
-let percentSortOrder = null;
-let profitSortOrder = null;
-const basePercentHeaderText = "预估涨跌(%)";
-const baseProfitHeaderText = "预估收益(元)";
-let originalOrderSnapshot = null;
- 
-const APP_STATE = {
-  ESTIMATE: "ESTIMATE",
-  REAL: "REAL",
-  PAUSED: "PAUSED"
-};
-
-function getChinaDate() {
-  const now = new Date();
-  const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
-  return new Date(utc + (3600000 * 8));
-}
-
-function getCurrentMinutes() {
-  const now = getChinaDate();
-  const h = now.getHours();
-  const m = now.getMinutes();
-  return h * 60 + m;
-}
-
-function getAppStatus() {
-  const now = getChinaDate();
-  const day = now.getDay();
-
-  // Special handling for Friday night extending into Saturday morning?
-  // Or just simple rule: Weekends are PAUSED for AUTO refresh.
-  // Manual refresh is always possible if logic permits.
-  if (day === 0 || day === 6) {
-      return APP_STATE.PAUSED;
-  }
-
-  const t = now.getHours() * 60 + now.getMinutes();
-
-  // 09:20 - 15:10 ESTIMATE (Continuous window as requested)
-  // Actually usually 11:30-13:00 is break, but user said "9:20-15:10"
-  // Let's assume user wants continuous updates or just simplified range.
-  // Standard A-share is 9:30-11:30, 13:00-15:00.
-  // Let's stick to the exact user request: 9:20 - 15:10.
-  if (t >= 9 * 60 + 20 && t < 15 * 60 + 10) {
-    return APP_STATE.ESTIMATE;
-  }
-
-  // 18:00 - 22:00 REAL
-  if (t >= 18 * 60 && t < 22 * 60) {
-    return APP_STATE.REAL;
-  }
-
-  return APP_STATE.PAUSED;
-}
-
-function isTradingTime() {
-   // Keep for backward compatibility if needed, or map to getAppStatus
-   return getAppStatus() === APP_STATE.ESTIMATE;
-}
-
-function isTradingDay() {
-  const day = getChinaDate().getDay();
-  return day !== 0 && day !== 6;
-}
-
-function shouldShowEstimateOnly() {
-  if (!isTradingDay()) {
-    return false;
-  }
-  const now = getChinaDate();
-  const h = now.getHours();
-  // 9:00之后只展示当日的预估值
-  return h >= 9;
-}
-
-function getRowPercent(row) {
-const percentCell = row.querySelector('td[data-role="percent-cell"] span');
-const v = percentCell ? parseFloat(percentCell.textContent) : NaN;
-return v;
-}
-
-function getRowProfit(row) {
-const profitCell = row.querySelector('td[data-role="profit-cell"] span');
-const v = profitCell ? parseFloat(profitCell.textContent) : NaN;
-return v;
-}
-
-function sortTableBy(type, order) {
-const tbody = getFundTableBody();
-if (!tbody) {
-return;
-}
-const rows = getFundRows();
-rows.sort((a, b) => {
-let av = NaN;
-let bv = NaN;
-if (type === "percent") {
-av = getRowPercent(a);
-bv = getRowPercent(b);
-} else {
-av = getRowProfit(a);
-bv = getRowProfit(b);
-}
-const aNa = Number.isNaN(av);
-const bNa = Number.isNaN(bv);
-if (aNa && bNa) return 0;
-if (aNa) return 1;
-if (bNa) return -1;
-if (order === "asc") {
-return av - bv;
-}
-return bv - av;
-});
-rows.forEach(r => tbody.appendChild(r));
-updateRowIndices();
-}
-
-function updateSortHeaderUI() {
-if (percentHeader) {
-percentHeader.textContent = basePercentHeaderText;
-percentHeader.classList.remove("sort-asc", "sort-desc");
-if (percentSortOrder) {
-percentHeader.classList.add(percentSortOrder === "asc" ? "sort-asc" : "sort-desc");
-}
-const s = percentHeader.querySelector(".sort-state");
-if (s) {
-if (!percentSortOrder) {
-s.textContent = "不排序";
-} else if (percentSortOrder === "desc") {
-s.textContent = "从高到低";
-} else {
-s.textContent = "从低到高";
-}
-}
-}
-if (profitHeader) {
-profitHeader.textContent = baseProfitHeaderText;
-profitHeader.classList.remove("sort-asc", "sort-desc");
-if (profitSortOrder) {
-profitHeader.classList.add(profitSortOrder === "asc" ? "sort-asc" : "sort-desc");
-}
-const s = profitHeader.querySelector(".sort-state");
-if (s) {
-if (!profitSortOrder) {
-s.textContent = "不排序";
-} else if (profitSortOrder === "desc") {
-s.textContent = "从高到低";
-} else {
-s.textContent = "从低到高";
-}
-}
-}
-}
-
-function getFundTableBody() {
-return document.getElementById("fund-table-body");
-}
-
-function getFundRows() {
-const tbody = getFundTableBody();
-if (!tbody) {
-return [];
-}
-return Array.from(tbody.querySelectorAll('tr[data-role="fund-row"]'));
-}
-
-function getFundRowInputs(row) {
-const inputs = row.querySelectorAll("input");
-return {
-nameInput: inputs[0] || null,
-zfbInput: inputs[1] || null,
-stockInput: inputs[2] || null
-};
-}
-
-function getFundCodeFromRow(row) {
-const inputs = getFundRowInputs(row);
-const name = inputs.nameInput ? inputs.nameInput.value.trim() : "";
-return parseFundCodeFromName(name);
-}
-
-function getCurrentRows() {
-return getFundRows();
-}
-
-function restoreOriginalOrder() {
-if (!originalOrderSnapshot) {
-return;
-}
-const tbody = getFundTableBody();
-if (!tbody) {
-return;
-}
-const currentRows = getCurrentRows();
-const snapshotSet = new Set(originalOrderSnapshot);
-originalOrderSnapshot.forEach(row => {
-if (tbody.contains(row)) {
-tbody.appendChild(row);
-}
-});
-currentRows.forEach(row => {
-if (!snapshotSet.has(row)) {
-tbody.appendChild(row);
-}
-});
-updateRowIndices();
-}
-
-function getTodayDateString() {
-  const now = getChinaDate();
-  const year = String(now.getFullYear());
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  const hours = String(now.getHours()).padStart(2, "0");
-  const minutes = String(now.getMinutes()).padStart(2, "0");
-  const seconds = String(now.getSeconds()).padStart(2, "0");
-  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
-}
-
-const fundJsonpMap = new Map();
-let isGlobalFetching = false;
-
-function isChromeExtensionEnv() {
-if (typeof chrome === "undefined") {
-return false;
-}
-if (!chrome.runtime) {
-return false;
-}
-return Boolean(chrome.runtime.id);
-}
-
-function fetchFundJsonViaExtension(code) {
-return new Promise((resolve, reject) => {
-if (!code) {
-reject(new Error("缺少基金代码"));
-return;
-}
-if (!isChromeExtensionEnv()) {
-reject(new Error("当前环境不是 Chrome 插件"));
-return;
-}
-try {
-chrome.runtime.sendMessage(
-{ type: "fetchFundJson", code },
-response => {
-if (chrome.runtime.lastError) {
-reject(new Error("获取基金数据失败"));
-return;
-}
-if (!response || !response.ok || !response.data) {
-const message = response && response.error ? response.error : "获取基金数据失败";
-reject(new Error(message));
-return;
-}
-resolve(response.data);
-}
-);
-} catch (e) {
-reject(new Error("获取基金数据失败"));
-}
-});
-}
-
-function fetchFundRealPercent(code) {
-return new Promise((resolve, reject) => {
-if (!code) {
-reject(new Error("缺少基金代码"));
-return;
-}
-if (!isChromeExtensionEnv()) {
-reject(new Error("当前环境不是 Chrome 插件"));
-return;
-}
-try {
-chrome.runtime.sendMessage(
-{ type: "fetchFundRealPercent", code },
-response => {
-if (chrome.runtime.lastError) {
-reject(new Error("获取基金真实涨跌幅失败"));
-return;
-}
-if (!response || !response.ok || typeof response.data !== "number" || Number.isNaN(response.data)) {
-const message = response && response.error ? response.error : "获取基金真实涨跌幅失败";
-reject(new Error(message));
-return;
-}
-resolve(response.data);
-}
-);
-} catch (e) {
-reject(new Error("获取基金真实涨跌幅失败"));
-}
-});
-}
-
-function ensureJsonpHandler() {
-if (window._fundJsonpInitialized) {
-return;
-}
-    window._fundJsonpInitialized = true;
-    window.jsonpgz = function (data) {
-    if (!data || !data.fundcode) {
-    return;
-    }
-    const code = data.fundcode;
-    const requests = fundJsonpMap.get(code) || [];
-    fundJsonpMap.delete(code);
-    for (let i = 0; i < requests.length; i += 1) {
-      const request = requests[i];
-      try {
-        const value = request.transform ? request.transform(data) : data;
-        request.resolve(value);
-      } catch (e) {
-        if (request.reject) {
-          if (e instanceof Error) {
-            request.reject(e);
-          } else {
-            request.reject(new Error("解析基金数据失败"));
-          }
-        }
-      }
-    }
-    const scripts = document.querySelectorAll(`script[data-fund-code="${code}"]`);
-    scripts.forEach(script => {
-    const parent = script.parentNode;
-    if (parent) {
-    parent.removeChild(script);
-    }
-    });
-    };
-}
-
-function fetchFundJsonp(code, transform) {
-  return new Promise((resolve, reject) => {
-    const timeoutMs = 8000;
-    let timer = null;
-    let requestObj = null;
-
-    const cleanup = () => {
-      if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
-    };
-
-    try {
-      ensureJsonpHandler();
-    } catch (e) {
-      reject(new Error("初始化JSONP处理器失败"));
-      return;
-    }
-
-    timer = setTimeout(() => {
-      const list = fundJsonpMap.get(code);
-      if (list) {
-        const idx = list.indexOf(requestObj);
-        if (idx !== -1) {
-          list.splice(idx, 1);
-        }
-        if (list.length === 0) {
-          fundJsonpMap.delete(code);
-          const scripts = document.querySelectorAll(`script[data-fund-code="${code}"]`);
-          scripts.forEach(s => s.remove());
-        }
-      }
-      reject(new Error("请求超时"));
-    }, timeoutMs);
-
-    requestObj = {
-      code,
-      resolve: (val) => {
-        cleanup();
-        resolve(val);
-      },
-      reject: (err) => {
-        cleanup();
-        reject(err);
-      },
-      transform: transform || (d => d)
-    };
-
-    try {
-      const list = fundJsonpMap.get(code) || [];
-      list.push(requestObj);
-      fundJsonpMap.set(code, list);
-      
-      const script = document.createElement("script");
-      script.src = `https://fundgz.1234567.com.cn/js/${code}.js?rt=${Date.now()}`;
-      script.dataset.fundCode = code;
-      script.onerror = () => {
-        const list = fundJsonpMap.get(code) || [];
-        fundJsonpMap.delete(code);
-        for (let i = 0; i < list.length; i += 1) {
-          // This will trigger the reject wrapper which calls cleanup
-          list[i].reject(new Error("获取基金数据失败"));
-        }
-        script.remove();
-      };
-      document.body.appendChild(script);
-    } catch (e) {
-      cleanup();
-      reject(new Error("创建请求脚本失败"));
-    }
+  const rows = getFundRows();
+  rows.forEach(row => {
+    row.classList.remove("dragging");
   });
-}
-
-function fetchFundEstimate(code) {
-  return new Promise((resolve, reject) => {
-    if (!code) {
-      reject(new Error("缺少基金代码"));
-      return;
-    }
-    if (isChromeExtensionEnv()) {
-      // Add timeout for extension calls too
-      const timeoutMs = 8000;
-      let timer = setTimeout(() => reject(new Error("请求超时")), timeoutMs);
-      
-      fetchFundJsonViaExtension(code).then(data => {
-        clearTimeout(timer);
-        const percent = parseFloat(data.gszzl);
-        if (Number.isNaN(percent)) {
-          reject(new Error("无效的涨跌幅数据"));
-          return;
-        }
-        resolve(percent);
-      }).catch(err => {
-        clearTimeout(timer);
-        reject(err);
-      });
-      return;
-    }
-    
-    fetchFundJsonp(code, data => {
-      const percent = parseFloat(data.gszzl);
-      if (Number.isNaN(percent)) {
-        throw new Error("无效的涨跌幅数据");
-      }
-      return percent;
-    }).then(resolve).catch(reject);
-  });
-}
-
-function fetchFundInfo(code) {
-  return new Promise((resolve, reject) => {
-    if (!code) {
-      reject(new Error("缺少基金代码"));
-      return;
-    }
-    if (isChromeExtensionEnv()) {
-      const timeoutMs = 8000;
-      let timer = setTimeout(() => reject(new Error("请求超时")), timeoutMs);
-      
-      fetchFundJsonViaExtension(code).then(data => {
-        clearTimeout(timer);
-        resolve(data);
-      }).catch(err => {
-        clearTimeout(timer);
-        reject(err);
-      });
-      return;
-    }
-    
-    fetchFundJsonp(code, data => data).then(resolve).catch(reject);
-  });
-}
-
-function parseFundCodeFromName(name) {
-if (!name) return null;
-const match = name.match(/(\d{6})/);
-if (!match) {
-return null;
-}
-return match[1];
-}
-
-function tryFetchFundByInput(nameInput, options) {
-const showAlertOnMissing = !options || options.showAlertOnMissing !== false;
-const raw = nameInput.value.trim();
-const resolvedPattern = /^\d{6}\s{2}.+/;
-if (resolvedPattern.test(raw)) {
-return;
-}
-const code = parseFundCodeFromName(raw);
-if (!code) {
-if (showAlertOnMissing) {
-window.alert("请先输入6位基金代码");
-}
-return;
-}
-const rows = getFundRows();
-let duplicate = false;
-rows.forEach(row => {
-const inputs = row.querySelectorAll("input");
-const otherNameInput = inputs[0];
-if (!otherNameInput || otherNameInput === nameInput) {
-return;
-}
-const otherCode = parseFundCodeFromName(otherNameInput.value.trim());
-if (otherCode && otherCode === code) {
-duplicate = true;
-}
-});
-if (duplicate) {
-window.alert("该基金代码已存在，请不要重复添加");
-return;
-}
-nameInput.disabled = true;
-fetchFundInfo(code).then(data => {
-nameInput.disabled = false;
-if (!data || !data.name) {
-window.alert("未能获取基金名称，请检查基金代码");
-return;
-}
-nameInput.value = `${code}  ${data.name}`;
-handleStorageUpdate();
-}).catch(() => {
-nameInput.disabled = false;
-window.alert("未能获取基金名称，请检查基金代码或网络连接");
-});
-}
-
-function loadHoldingsFromStorage() {
-try {
-const raw = window.localStorage.getItem(STORAGE_KEY);
-if (!raw) return [];
-const parsed = JSON.parse(raw);
-if (!Array.isArray(parsed)) return [];
-return parsed;
-} catch (e) {
-return [];
-}
-}
-
-function saveHoldingsToStorage(holdings) {
-  try {
-    const serialized = JSON.stringify(holdings);
-    window.localStorage.setItem(STORAGE_KEY, serialized);
-  } catch (e) {
-  }
-}
-
-function loadPercentStatusFromStorage() {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY_PERCENT);
-    if (!raw) return {};
-    return JSON.parse(raw);
-  } catch (e) {
-    return {};
-  }
-}
-
-function savePercentStatusToStorage(statusMap) {
-  try {
-    const serialized = JSON.stringify(statusMap);
-    window.localStorage.setItem(STORAGE_KEY_PERCENT, serialized);
-  } catch (e) {
-  }
-}
-
-function loadSortStatusFromStorage() {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY_SORT);
-    if (!raw) return null;
-    return JSON.parse(raw);
-  } catch (e) {
-    return null;
-  }
-}
-
-function saveSortStatusToStorage(sortStatus) {
-  try {
-    const serialized = JSON.stringify(sortStatus);
-    window.localStorage.setItem(STORAGE_KEY_SORT, serialized);
-  } catch (e) {
-  }
+  dragSourceRow = null;
+  updateRowIndices();
+  handleStorageUpdate();
+  scheduleProfit();
 }
 
 function createTableRow(fund) {
-const tr = document.createElement("tr");
-const indexTd = document.createElement("td");
-const nameTd = document.createElement("td");
-const zfbAmountTd = document.createElement("td");
-const stockAmountTd = document.createElement("td");
-const amountTd = document.createElement("td");
-const zfbProfitTd = document.createElement("td");
-const stockProfitTd = document.createElement("td");
-const percentTd = document.createElement("td");
-const profitTd = document.createElement("td");
-const actionsTd = document.createElement("td");
-const nameInput = document.createElement("input");
-nameInput.type = "text";
-nameInput.value = fund.name || "";
-nameInput.placeholder = "请输入6位基金代码，例如：110022";
+  const tr = document.createElement("tr");
+  const indexTd = document.createElement("td");
+  const nameTd = document.createElement("td");
+  const zfbAmountTd = document.createElement("td");
+  const stockAmountTd = document.createElement("td");
+  const amountTd = document.createElement("td");
+  const zfbProfitTd = document.createElement("td");
+  const stockProfitTd = document.createElement("td");
+  const percentTd = document.createElement("td");
+  const profitTd = document.createElement("td");
+  const actionsTd = document.createElement("td");
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.value = fund.name || "";
+  nameInput.placeholder = "请输入6位基金代码，例如：110022";
   nameInput.addEventListener("change", handleStorageUpdate);
   nameInput.addEventListener("blur", handleNameBlur);
   nameInput.addEventListener("keydown", handleNameKeyDown);
-const zfbInput = document.createElement("input");
-zfbInput.type = "number";
-zfbInput.step = "0.01";
-zfbInput.min = "0";
-zfbInput.value = fund.zfbAmount != null ? formatCurrency(Number(fund.zfbAmount)) : "0.00";
+  const zfbInput = document.createElement("input");
+  zfbInput.type = "number";
+  zfbInput.step = "0.01";
+  zfbInput.min = "0";
+  zfbInput.value = fund.zfbAmount != null ? formatCurrency(Number(fund.zfbAmount)) : "0.00";
   zfbInput.addEventListener("blur", handleAmountBlur);
   zfbInput.addEventListener("input", handleAmountInput);
   zfbInput.addEventListener("change", handleAmountChange);
-zfbInput.className = "narrow-number-input";
-const stockInput = document.createElement("input");
-stockInput.type = "number";
-stockInput.step = "0.01";
-stockInput.min = "0";
-stockInput.value = fund.stockAmount != null ? formatCurrency(Number(fund.stockAmount)) : "0.00";
+  zfbInput.className = "narrow-number-input";
+  const stockInput = document.createElement("input");
+  stockInput.type = "number";
+  stockInput.step = "0.01";
+  stockInput.min = "0";
+  stockInput.value = fund.stockAmount != null ? formatCurrency(Number(fund.stockAmount)) : "0.00";
   stockInput.addEventListener("blur", handleAmountBlur);
   stockInput.addEventListener("input", handleAmountInput);
   stockInput.addEventListener("change", handleAmountChange);
-stockInput.className = "narrow-number-input";
-const amountSpan = document.createElement("span");
-amountSpan.dataset.role = "amount-display";
-amountSpan.textContent = "0.00";
-const zfbProfitSpan = document.createElement("span");
-zfbProfitSpan.textContent = "0.00";
-const stockProfitSpan = document.createElement("span");
-stockProfitSpan.textContent = "0.00";
-const percentSpan = document.createElement("span");
-percentSpan.textContent = "0.00%";
-const profitSpan = document.createElement("span");
-profitSpan.textContent = "0.00";
-const viewButton = document.createElement("button");
-viewButton.type = "button";
-viewButton.textContent = "详";
-viewButton.className = "icon-button";
+  stockInput.className = "narrow-number-input";
+  const amountSpan = document.createElement("span");
+  amountSpan.dataset.role = "amount-display";
+  amountSpan.textContent = "0.00";
+  const zfbProfitSpan = document.createElement("span");
+  zfbProfitSpan.textContent = "0.00";
+  const stockProfitSpan = document.createElement("span");
+  stockProfitSpan.textContent = "0.00";
+  const percentSpan = document.createElement("span");
+  percentSpan.textContent = "0.00%";
+  const profitSpan = document.createElement("span");
+  profitSpan.textContent = "0.00";
+  const viewButton = document.createElement("button");
+  viewButton.type = "button";
+  viewButton.textContent = "详";
+  viewButton.className = "icon-button";
   viewButton.dataset.action = "view-fund";
-const deleteButton = document.createElement("button");
-deleteButton.type = "button";
-deleteButton.textContent = "删";
-deleteButton.className = "danger-button";
+  const deleteButton = document.createElement("button");
+  deleteButton.type = "button";
+  deleteButton.textContent = "删";
+  deleteButton.className = "danger-button";
   deleteButton.dataset.action = "delete-fund";
-indexTd.dataset.role = "row-index";
-indexTd.draggable = true;
-indexTd.addEventListener("dragstart", handleRowDragStart);
-indexTd.addEventListener("dragover", handleRowDragOver);
-indexTd.addEventListener("drop", handleRowDrop);
-indexTd.addEventListener("dragend", handleRowDragEnd);
-zfbProfitTd.dataset.role = "zfb-profit-cell";
-stockProfitTd.dataset.role = "stock-profit-cell";
-percentTd.dataset.role = "percent-cell";
-profitTd.dataset.role = "profit-cell";
-nameTd.appendChild(nameInput);
-zfbAmountTd.appendChild(zfbInput);
-stockAmountTd.appendChild(stockInput);
-amountTd.appendChild(amountSpan);
-zfbProfitTd.appendChild(zfbProfitSpan);
-stockProfitTd.appendChild(stockProfitSpan);
-percentTd.appendChild(percentSpan);
-profitTd.appendChild(profitSpan);
-actionsTd.appendChild(viewButton);
-actionsTd.appendChild(deleteButton);
-tr.appendChild(indexTd);
-tr.appendChild(nameTd);
-tr.appendChild(zfbAmountTd);
-tr.appendChild(stockAmountTd);
-tr.appendChild(amountTd);
-tr.appendChild(zfbProfitTd);
-tr.appendChild(stockProfitTd);
-tr.appendChild(percentTd);
-tr.appendChild(profitTd);
-tr.appendChild(actionsTd);
-tr.dataset.role = "fund-row";
-return tr;
+  indexTd.dataset.role = "row-index";
+  indexTd.draggable = true;
+  indexTd.addEventListener("dragstart", handleRowDragStart);
+  indexTd.addEventListener("dragover", handleRowDragOver);
+  indexTd.addEventListener("drop", handleRowDrop);
+  indexTd.addEventListener("dragend", handleRowDragEnd);
+  zfbProfitTd.dataset.role = "zfb-profit-cell";
+  stockProfitTd.dataset.role = "stock-profit-cell";
+  percentTd.dataset.role = "percent-cell";
+  profitTd.dataset.role = "profit-cell";
+  nameTd.appendChild(nameInput);
+  zfbAmountTd.appendChild(zfbInput);
+  stockAmountTd.appendChild(stockInput);
+  amountTd.appendChild(amountSpan);
+  zfbProfitTd.appendChild(zfbProfitSpan);
+  stockProfitTd.appendChild(stockProfitSpan);
+  percentTd.appendChild(percentSpan);
+  profitTd.appendChild(profitSpan);
+  actionsTd.appendChild(viewButton);
+  actionsTd.appendChild(deleteButton);
+  tr.appendChild(indexTd);
+  tr.appendChild(nameTd);
+  tr.appendChild(zfbAmountTd);
+  tr.appendChild(stockAmountTd);
+  tr.appendChild(amountTd);
+  tr.appendChild(zfbProfitTd);
+  tr.appendChild(stockProfitTd);
+  tr.appendChild(percentTd);
+  tr.appendChild(profitTd);
+  tr.appendChild(actionsTd);
+  tr.dataset.role = "fund-row";
+  return tr;
 }
 
 function readHoldingsFromTable() {
-const rows = getFundRows();
-const holdings = [];
-rows.forEach(row => {
-const inputs = getFundRowInputs(row);
-const nameInput = inputs.nameInput;
-const zfbInput = inputs.zfbInput;
-const stockInput = inputs.stockInput;
-const name = nameInput ? nameInput.value.trim() : "";
-const zfbAmount = zfbInput ? parseFloat(zfbInput.value) : NaN;
-const stockAmount = stockInput ? parseFloat(stockInput.value) : NaN;
-const hasZfb = !Number.isNaN(zfbAmount) && zfbAmount > 0;
-const hasStock = !Number.isNaN(stockAmount) && stockAmount > 0;
-if (!name && !hasZfb && !hasStock) {
-return;
-}
-holdings.push({
-name,
-zfbAmount: hasZfb ? zfbAmount : 0,
-stockAmount: hasStock ? stockAmount : 0
-});
-});
-return holdings;
+  const rows = getFundRows();
+  const holdings = [];
+  rows.forEach(row => {
+    const inputs = getFundRowInputs(row);
+    const nameInput = inputs.nameInput;
+    const zfbInput = inputs.zfbInput;
+    const stockInput = inputs.stockInput;
+    const name = nameInput ? nameInput.value.trim() : "";
+    const zfbAmount = zfbInput ? parseFloat(zfbInput.value) : NaN;
+    const stockAmount = stockInput ? parseFloat(stockInput.value) : NaN;
+    const hasZfb = !Number.isNaN(zfbAmount) && zfbAmount > 0;
+    const hasStock = !Number.isNaN(stockAmount) && stockAmount > 0;
+    if (!name && !hasZfb && !hasStock) {
+      return;
+    }
+    holdings.push({
+      name,
+      zfbAmount: hasZfb ? zfbAmount : 0,
+      stockAmount: hasStock ? stockAmount : 0
+    });
+  });
+  return holdings;
 }
 
 function handleStorageUpdate() {
-const holdings = readHoldingsFromTable();
-saveHoldingsToStorage(holdings);
+  const holdings = readHoldingsFromTable();
+  saveHoldingsToStorage(holdings);
 }
+
+// --- Sorting ---
+
+function getRowPercent(row) {
+  const percentCell = row.querySelector('td[data-role="percent-cell"] span');
+  const v = percentCell ? parseFloat(percentCell.textContent) : NaN;
+  return v;
+}
+
+function getRowProfit(row) {
+  const profitCell = row.querySelector('td[data-role="profit-cell"] span');
+  const v = profitCell ? parseFloat(profitCell.textContent) : NaN;
+  return v;
+}
+
+function sortTableBy(type, order) {
+  const tbody = getFundTableBody();
+  if (!tbody) {
+    return;
+  }
+  const rows = getFundRows();
+  rows.sort((a, b) => {
+    let av = NaN;
+    let bv = NaN;
+    if (type === "percent") {
+      av = getRowPercent(a);
+      bv = getRowPercent(b);
+    } else {
+      av = getRowProfit(a);
+      bv = getRowProfit(b);
+    }
+    const aNa = Number.isNaN(av);
+    const bNa = Number.isNaN(bv);
+    if (aNa && bNa) return 0;
+    if (aNa) return 1;
+    if (bNa) return -1;
+    if (order === "asc") {
+      return av - bv;
+    }
+    return bv - av;
+  });
+  rows.forEach(r => tbody.appendChild(r));
+  updateRowIndices();
+}
+
+function restoreOriginalOrder() {
+  if (!originalOrderSnapshot) {
+    return;
+  }
+  const tbody = getFundTableBody();
+  if (!tbody) {
+    return;
+  }
+  const currentRows = getCurrentRows();
+  const snapshotSet = new Set(originalOrderSnapshot);
+  originalOrderSnapshot.forEach(row => {
+    if (tbody.contains(row)) {
+      tbody.appendChild(row);
+    }
+  });
+  currentRows.forEach(row => {
+    if (!snapshotSet.has(row)) {
+      tbody.appendChild(row);
+    }
+  });
+  updateRowIndices();
+}
+
+// --- Main App Logic ---
 
 function populateTableFromStorage() {
   const tbody = document.getElementById("fund-table-body");
@@ -896,13 +729,11 @@ function populateTableFromStorage() {
         zfbAmount: fund.zfbAmount != null ? fund.zfbAmount : null,
         stockAmount: fund.stockAmount != null ? fund.stockAmount : null
       });
-      
+
       // Try to restore percent status
       const code = getFundCodeFromRow(row);
       if (code && statusMap[code]) {
         const status = statusMap[code];
-        // Only restore if it is a "real" value and we are NOT in the "estimate only" window (after 9am)
-        // If we are after 9am, we want to start fresh (0 or fetch), so don't restore real values
         if (status.isReal && !onlyEstimates) {
           const percentCell = row.querySelector('td[data-role="percent-cell"] span');
           if (percentCell) {
@@ -919,190 +750,6 @@ function populateTableFromStorage() {
   tbody.appendChild(fragment);
   updateRowIndices();
   calculateProfit();
-}
-
-function calculateProfit() {
-  const rows = getFundRows();
-  const updates = [];
-  let totalZfbAmount = 0;
-  let totalStockAmount = 0;
-  let totalZfbProfit = 0;
-  let totalStockProfit = 0;
-  let totalProfit = 0;
-  let totalHoldingAmount = 0;
-
-  rows.forEach(row => {
-    const inputs = getFundRowInputs(row);
-    const zfbInput = inputs.zfbInput;
-    const stockInput = inputs.stockInput;
-    const percentCell = row.querySelector('td[data-role="percent-cell"] span');
-    
-    // Cache elements for write phase
-    const amountSpan = row.querySelector('span[data-role="amount-display"]');
-    const zfbProfitCell = row.querySelector('td[data-role="zfb-profit-cell"] span');
-    const stockProfitCell = row.querySelector('td[data-role="stock-profit-cell"] span');
-    const profitCell = row.querySelector('td[data-role="profit-cell"] span');
-
-    const zfbAmount = zfbInput ? parseFloat(zfbInput.value) : NaN;
-    const stockAmount = stockInput ? parseFloat(stockInput.value) : NaN;
-    const normalizedZfb = Number.isNaN(zfbAmount) ? 0 : zfbAmount;
-    const normalizedStock = Number.isNaN(stockAmount) ? 0 : stockAmount;
-    const amount = normalizedZfb + normalizedStock;
-    const percent = percentCell ? parseFloat(percentCell.textContent) : NaN;
-    const isReal = percentCell && percentCell.dataset && percentCell.dataset.real === "true";
-
-    totalZfbAmount += normalizedZfb;
-    totalStockAmount += normalizedStock;
-    if (amount > 0) {
-        totalHoldingAmount += amount;
-    }
-
-    let zfbProfit = 0;
-    let stockProfit = 0;
-    let rowProfit = 0;
-    let validCalc = false;
-
-    if (amount > 0 && !Number.isNaN(percent)) {
-        zfbProfit = normalizedZfb * percent / 100;
-        stockProfit = normalizedStock * percent / 100;
-        rowProfit = zfbProfit + stockProfit;
-        validCalc = true;
-
-        totalZfbProfit += zfbProfit;
-        totalStockProfit += stockProfit;
-        totalProfit += rowProfit;
-    }
-
-    updates.push({
-        amountSpan,
-        zfbProfitCell,
-        stockProfitCell,
-        profitCell,
-        amount,
-        zfbProfit,
-        stockProfit,
-        rowProfit,
-        validCalc,
-        isReal
-    });
-  });
-
-function updateAndFlash(element, newValueString) {
-  if (!element) return;
-  if (element.textContent !== newValueString) {
-    element.textContent = newValueString;
-    const parent = element.parentElement;
-    if (parent) {
-      parent.classList.remove("value-updated");
-      void parent.offsetWidth; // trigger reflow
-      parent.classList.add("value-updated");
-    }
-  }
-}
-
-  updates.forEach(data => {
-      if (data.amountSpan) {
-          updateAndFlash(data.amountSpan, formatCurrency(data.amount));
-      }
-      
-      if (!data.validCalc) {
-          if (data.zfbProfitCell) { updateAndFlash(data.zfbProfitCell, "0.00"); applyProfitColor(data.zfbProfitCell, 0); }
-          if (data.stockProfitCell) { updateAndFlash(data.stockProfitCell, "0.00"); applyProfitColor(data.stockProfitCell, 0); }
-          if (data.profitCell) { updateAndFlash(data.profitCell, "0.00"); applyProfitColor(data.profitCell, 0); }
-      } else {
-          if (data.zfbProfitCell) { updateAndFlash(data.zfbProfitCell, formatCurrency(data.zfbProfit)); applyProfitColor(data.zfbProfitCell, data.zfbProfit); }
-          if (data.stockProfitCell) { updateAndFlash(data.stockProfitCell, formatCurrency(data.stockProfit)); applyProfitColor(data.stockProfitCell, data.stockProfit); }
-          if (data.profitCell) {
-              const suffix = data.isReal ? "(实)" : "";
-              const newText = `${formatCurrency(data.rowProfit)}${suffix}`;
-              updateAndFlash(data.profitCell, newText);
-              applyProfitColor(data.profitCell, data.rowProfit);
-          }
-      }
-  });
-
-  const elTotalZfb = totalZfbAmountElement || document.getElementById("total-zfb-amount");
-  if (elTotalZfb) elTotalZfb.textContent = formatCurrency(totalZfbAmount);
-
-  const elTotalStock = totalStockAmountElement || document.getElementById("total-stock-amount");
-  if (elTotalStock) elTotalStock.textContent = formatCurrency(totalStockAmount);
-  
-  const elTotalAmount = totalAmountElement || document.getElementById("total-amount");
-  if (elTotalAmount) elTotalAmount.textContent = formatCurrency(totalHoldingAmount);
-
-  const elTotalPercent = totalPercentElement || document.getElementById("total-percent");
-  if (elTotalPercent) {
-      const totalPercent = totalHoldingAmount > 0 ? (totalProfit / totalHoldingAmount) * 100 : 0;
-      elTotalPercent.textContent = `${formatNumber(totalPercent)}%`;
-      applyProfitColor(elTotalPercent, totalPercent);
-  }
-
-  const elTotalZfbProfit = totalZfbProfitElement || document.getElementById("total-zfb-profit");
-  if (elTotalZfbProfit) {
-      elTotalZfbProfit.textContent = formatCurrency(totalZfbProfit);
-      applyProfitColor(elTotalZfbProfit, totalZfbProfit);
-  }
-
-  const elTotalStockProfit = totalStockProfitElement || document.getElementById("total-stock-profit");
-  if (elTotalStockProfit) {
-      elTotalStockProfit.textContent = formatCurrency(totalStockProfit);
-      applyProfitColor(elTotalStockProfit, totalStockProfit);
-  }
-
-  const elTotalProfit = totalProfitElement || document.getElementById("total-profit");
-  if (elTotalProfit) {
-      elTotalProfit.textContent = formatCurrency(totalProfit);
-      applyProfitColor(elTotalProfit, totalProfit);
-  }
-
-  if (isChromeExtensionEnv()) {
-    updateExtensionBadge(totalProfit);
-  }
-}
-
-function updateExtensionBadge(value) {
-if (!isChromeExtensionEnv()) {
-return;
-}
-let text = "";
-if (Number.isNaN(value)) {
-text = "";
-} else {
-const abs = Math.abs(value);
-if (abs === 0) {
-text = "0";
-} else if (abs < 1000) {
-text = String(Math.round(abs));
-} else {
-const absInK = abs / 1000;
-let formatted = absInK.toFixed(2);
-text = `${formatted}k`;
-if (text.length > 4) {
-formatted = absInK.toFixed(1);
-text = `${formatted}k`;
-}
-if (text.length > 4) {
-const intK = Math.round(absInK);
-text = `${intK}k`;
-}
-if (text.length > 4) {
-const core = String(Math.round(absInK));
-text = `${core.slice(0, 3)}k`;
-}
-}
-}
-let color = "#6b7280";
-if (!Number.isNaN(value)) {
-if (value > 0) {
-color = "#ef4444";
-} else if (value < 0) {
-color = "#10b981";
-}
-}
-try {
-chrome.runtime.sendMessage({ type: "updateBadge", text, color });
-} catch (e) {
-}
 }
 
 function autoFetchPercentages(options) {
@@ -1130,8 +777,6 @@ function autoFetchPercentages(options) {
     }
 
     const promise = fetchFundEstimate(code).then(percent => {
-      // If we are enforcing estimates (after 9am), even 0 is a valid result to overwrite 'real'
-      // If percent is 0, we treat it as 0.00%
       if (onlyEstimates) {
          // After 9:00, show estimate or 0
          const value = percent === 0 ? "0.00" : formatNumber(percent);
@@ -1143,9 +788,6 @@ function autoFetchPercentages(options) {
          return true;
       } else {
         // Before 9:00, if we got here, it means we didn't have a real value.
-        // Standard logic: if 0, ignore? Or show 0?
-        // User request: "9:00之后...设置为0". Before 9:00, existing logic applies.
-        // Existing logic was: if 0 return true (no update).
         if (percent === 0) {
           return true;
         }
@@ -1160,7 +802,6 @@ function autoFetchPercentages(options) {
     }).catch(() => {
       // On failure
       if (onlyEstimates) {
-        // After 9:00, failed to get estimate -> set to 0
         percentCell.textContent = "0.00%";
         applyProfitColor(percentCell, 0);
         if (percentCell.dataset && percentCell.dataset.real) {
@@ -1172,48 +813,47 @@ function autoFetchPercentages(options) {
     });
     promises.push(promise);
   });
-if (promises.length === 0) {
-if (showAlert) {
-window.alert("请先在名称中输入包含6位基金代码的内容");
-}
-return;
-}
+  if (promises.length === 0) {
+    if (showAlert) {
+      window.alert("请先在名称中输入包含6位基金代码的内容");
+    }
+    return;
+  }
   const fetchButton = document.getElementById("fetch-percent-btn");
   if (fetchButton) {
-  fetchButton.disabled = true;
-  const icon = fetchButton.querySelector(".refresh-icon");
-  if (icon) icon.classList.add("spinning");
+    fetchButton.disabled = true;
+    const icon = fetchButton.querySelector(".refresh-icon");
+    if (icon) icon.classList.add("spinning");
   }
   isGlobalFetching = true;
   Promise.all(promises).then(results => {
-  isGlobalFetching = false;
-  const successCount = results.filter(Boolean).length;
-  if (fetchButton) {
-  fetchButton.disabled = false;
-  const icon = fetchButton.querySelector(".refresh-icon");
-  if (icon) icon.classList.remove("spinning");
-  }
-if (successCount === 0) {
-if (showAlert) {
-window.alert("未能获取任何基金的预估涨跌，请检查基金代码或网络连接");
-}
-return;
-}
-scheduleProfit();
+    isGlobalFetching = false;
+    const successCount = results.filter(Boolean).length;
+    if (fetchButton) {
+      fetchButton.disabled = false;
+      const icon = fetchButton.querySelector(".refresh-icon");
+      if (icon) icon.classList.remove("spinning");
+    }
+    if (successCount === 0) {
+      if (showAlert) {
+        window.alert("未能获取任何基金的预估涨跌，请检查基金代码或网络连接");
+      }
+      return;
+    }
+    scheduleProfit();
 
-// Re-apply sort if active
-if (percentSortOrder) {
-  sortTableBy("percent", percentSortOrder);
-} else if (profitSortOrder) {
-  sortTableBy("profit", profitSortOrder);
-}
-});
+    // Re-apply sort if active
+    if (percentSortOrder) {
+      sortTableBy("percent", percentSortOrder);
+    } else if (profitSortOrder) {
+      sortTableBy("profit", profitSortOrder);
+    }
+  });
 }
 
 function fetchRealPercentagesForAllFunds() {
   const rows = getFundRows();
   const promises = [];
-  // Use China Time (UTC+8) for all date calculations
   const chinaTime = getChinaDate();
   
   const year = chinaTime.getFullYear();
@@ -1227,24 +867,19 @@ function fetchRealPercentagesForAllFunds() {
   const isBeforeMarketOpen = currentMinutes < 9 * 60 + 30; // Before 09:30
 
   if (dayOfWeek === 0) { // Sunday
-    // Expect Friday
     const d = new Date(chinaTime);
     d.setDate(chinaTime.getDate() - 2);
     const m = String(d.getMonth() + 1).padStart(2, "0");
     const dy = String(d.getDate()).padStart(2, "0");
     expectedDateStr = `${d.getFullYear()}-${m}-${dy}`;
   } else if (dayOfWeek === 6) { // Saturday
-    // Expect Friday
     const d = new Date(chinaTime);
     d.setDate(chinaTime.getDate() - 1);
     const m = String(d.getMonth() + 1).padStart(2, "0");
     const dy = String(d.getDate()).padStart(2, "0");
     expectedDateStr = `${d.getFullYear()}-${m}-${dy}`;
   } else if (isBeforeMarketOpen) {
-    // Weekday but before 09:30, expect previous trading day
     const d = new Date(chinaTime);
-    // If Monday (1), previous is Friday (-3)
-    // If Tue-Fri, previous is yesterday (-1)
     if (dayOfWeek === 1) {
        d.setDate(chinaTime.getDate() - 3);
     } else {
@@ -1254,260 +889,15 @@ function fetchRealPercentagesForAllFunds() {
     const dy = String(d.getDate()).padStart(2, "0");
     expectedDateStr = `${d.getFullYear()}-${m}-${dy}`;
   } else {
-      // After 09:30 on weekdays.
-      // Usually this means we are in trading hours or waiting for tonight's update.
-      // But if user MANUALLY triggers REAL update (or logic falls through here), 
-      // we need to be careful.
-      
-      // If the API ALREADY has today's data (e.g. 20:00), then expectedDateStr=Today is correct.
-      // If API still has yesterday's data, we will mismatch and fallback to Estimate.
-      
-      // HOWEVER, sometimes `fetchFundInfo` returns `jzrq` as Yesterday's date even if we want Today's.
-      // And `fetchFundRealPercent` might return Yesterday's real percent?
-      // No, `fetchFundRealPercent` usually returns the latest available real percent.
-      
-      // The issue user reported: "Already got real percent, but still shows estimate".
-      // This implies that `fetchFundInfo` returned a date that MATCHED our expectation?
-      // OR, it implied that `fetchFundRealPercent` returned a value, but we discarded it?
-      
-      // Wait, if we are in fallback logic:
-      // `catch` block calls `fetchFundEstimate`.
-      // `fetchFundEstimate` returns estimate.
-      
-      // If the user says "Already got real percent", they might mean they SAW it momentarily?
-      // Or they know the data is updated source-side.
-      
-      // If we are strictly checking date:
-      // Maybe the `jzrq` format returned by API is slightly different?
-      // I am constructing `YYYY-MM-DD`.
-      
-      // Let's add a "Last Trading Day" check fallback?
-      // If `jzrq` is NOT today, but is the previous trading day, SHOULD we show it as "Real"?
-      // If it is 10:00 AM, and we fetch Real. We get Yesterday's Real.
-      // Should we show it?
-      // User says "Already got real percent". Maybe they mean for YESTERDAY?
-      // If so, my code currently EXPECTS Today (because it's after 09:30).
-      // So it rejects Yesterday's data and shows Estimate.
-      
-      // If user wants to see Yesterday's Real Data during the day?
-      // Usually "Estimate" is better for "Today".
-      // But if "Estimate" is 0 or invalid, maybe Real is better?
-      
-      // But if user explicitly says "Already got real percent but shows estimate",
-      // it sounds like they are in the Evening (e.g. 21:00), and API has updated.
-      // But maybe my `chinaTime` calculation or `expectedDateStr` has a bug?
-      // Or maybe `jzrq` from API is ONE DAY BEHIND the actual update time?
-      // (e.g. Update at 20:00 on 24th, but `jzrq` says 23rd? No, that would be weird).
-      
-      // Let's try to be less strict:
-      // If `jzrq` matches Today OR `jzrq` matches Last Trading Day?
-      // If it matches Last Trading Day, is it "Real" for Today? No.
-      // It is "Real" for Yesterday.
-      
-      // What if the user is clicking refresh at 20:00, and for some funds it updated, for others not?
-      
-      // Let's debug by allowing the code to accept `jzrq` if it matches Today.
-      // If it fails, we fall back.
-      
-      // Maybe the `expectedDateStr` logic for "After 09:30" is too naive?
-      // If it is 10:00 AM, `expectedDateStr` is Today.
-      // API returns Yesterday. Mismatch. Fallback to Estimate. -> Correct for 10:00 AM.
-      
-      // If it is 20:00 PM, `expectedDateStr` is Today.
-      // API returns Today. Match. Show Real. -> Correct for 20:00 PM.
-      
-      // So why "Already got real percent, but still shows estimate"?
-      // Maybe `fetchFundRealPercent` failed?
-      // Or `fetchFundInfo` failed?
-      
-      // One possibility: `fetchFundRealPercent` returns the percent number directly.
-      // But maybe the `jzrq` check is failing because `fetchFundInfo` returns a date string with different separators?
-      // e.g. "2024/05/05"?
-      // Usually it is "2024-05-05".
-      
-      // Another possibility: The user is testing this at a time when I think it should be Today, but API hasn't updated.
-      // But user says "Already got real percent".
-      // Maybe they mean they see the network request has data?
-      
-      // Let's look at `fetchFundRealPercent`.
-      // It calls `chrome.runtime.sendMessage({ type: "fetchFundRealPercent", code })`.
-      // This returns a number.
-      
-      // Wait, I see a potential logic gap.
-      // If `fetchFundRealPercent` returns a valid number, but `fetchFundInfo`'s `jzrq` is old.
-      // We throw "Data not updated yet".
-      // Then we catch and show Estimate.
-      // This is INTENTIONAL to avoid showing old data as new.
-      
-      // BUT, what if `fetchFundRealPercent` returns the NEW data, but `fetchFundInfo` (which might be a different API) returns OLD date?
-      // If they are from different sources, they might be out of sync!
-      // `fetchFundInfo` uses `fetchFundJsonp` (EastMoney fundgz).
-      // `fetchFundRealPercent` uses `fetchFundRealPercent` (Extension background).
-      // If Extension background scrapes a different source (e.g. Tiantian Fund HTML) which is faster than `fundgz` JSONP?
-      // Then we have: Real Percent is NEW, but Date Check (via JSONP) is OLD.
-      // So we reject the NEW Real Percent.
-      
-      // If this is the case, we should trust `fetchFundRealPercent` if it claims to be real?
-      // But `fetchFundRealPercent` just returns a number, no date.
-      // So we can't verify date from it.
-      
-      // If `fetchFundRealPercent` is reliable, maybe we should skip date check if it returns a value?
-      // But how do we know if it is Today's or Yesterday's?
-      // If the background script ensures it is latest?
-      
-      // Let's assume the user wants to see the "Real" value if it is available, even if our date check is conservative.
-      // Or, we can try to verify date from `fetchFundRealPercent` if it returned more info.
-      // But it only returns `data` (number).
-      
-      // HYPOTHESIS: `fetchFundInfo` (fundgz) is slower to update than the source used by `fetchFundRealPercent`.
-      // So we are blocking valid real data.
-      
-      // Fix: Relax the check. 
-      // If we are in the "Evening" window (18:00 - 24:00), and we get a Real Percent, we should probably trust it?
-      // But what if it is Yesterday's?
-      // If it is 19:00, and we get Yesterday's close.
-      // If we show it as "Real", user might think it is Today's.
-      // But Yesterday's Real IS the latest Real.
-      // The confusion is: Does "(实)" mean "Today's Final" or "Latest Final"?
-      // Usually "Real" implies "Confirmed Net Value".
-      // If it is 10:00 AM, "Real" is Yesterday's. "Estimate" is Today's.
-      // We want to show Estimate.
-      
-      // If it is 20:00 PM, "Real" is Today's (if updated).
-      // If not updated, "Real" is Yesterday's.
-      // If we show Yesterday's Real at 20:00, user might think it is Today's (no change).
-      // That is bad.
-      
-      // So we MUST verify date.
-      
-      // If `fundgz` is lagging, we are stuck.
-      // UNLESS `fetchFundRealPercent` can return the date too.
-      // But I cannot change the extension background code (I assume).
-      // I can only change `main.js`.
-      
-      // Wait, `fetchFundInfo` calls `fetchFundJsonViaExtension` or `fetchFundJsonp`.
-      // `fetchFundJsonViaExtension` calls `fetchFundJson`.
-      
-      // Let's assume the user is right and I am too strict.
-      // If I remove the date check, I risk showing old data.
-      // But if I keep it, I risk hiding new data (if sync issue).
-      
-      // COMPROMISE:
-      // If `fetchFundRealPercent` succeeds, AND `fetchFundInfo` date is Yesterday.
-      // AND we are in the Evening (18:00+).
-      // We *suspect* it might be old data.
-      // BUT if the user says "Already got real percent", maybe they see the number changing?
-      
-      // Actually, if `fetchFundRealPercent` returns the SAME number as Yesterday, we can't tell.
-      // If it returns a DIFFERENT number, it must be new (or very old).
-      
-      // Let's look at `expectedDateStr`.
-      // If I am at 20:00. `expectedDateStr` is Today.
-      // If `jzrq` is Yesterday.
-      // I throw.
-      
-      // If the user says "It shows Estimate", it means I threw.
-      // So `jzrq` was indeed Yesterday.
-      // So `fundgz` has NOT updated.
-      
-      // If `fundgz` hasn't updated, does `fetchFundRealPercent` have new data?
-      // If yes, then `fetchFundRealPercent` source is faster.
-      // If no, then we are correctly hiding old data.
-      
-      // User says "Already got real percent".
-      // This strongly suggests `fetchFundRealPercent` returned the NEW value.
-      // So `fundgz` is indeed lagging or I am checking wrong field.
-      // `fundgz` has `jzrq` (Net Value Date) and `gztime` (Estimate Time).
-      // Maybe I should check `gztime`? No, that's for estimate.
-      
-      // If I cannot verify date, I should probably trust `fetchFundRealPercent` IF we are in the "Force Real" mode?
-      // User clicked refresh manually in the evening.
-      // They EXPECT to see Real.
-      // If I show Estimate, they are annoyed.
-      // If I show Old Real, they might be misled, BUT at least they see a "Real" value.
-      // AND if `fetchFundRealPercent` actually has the NEW value, then it's correct!
-      
-      // So, let's REMOVE the date check for now, or make it a warning?
-      // Or only check date if we are strictly in "Auto" mode?
-      // No, "Real" label is dangerous if wrong.
-      
-      // Let's try this:
-      // If `jzrq` matches Today -> Show Real.
-      // If `jzrq` matches Yesterday AND it is Evening (18:00+) -> 
-      //    This is the ambiguous case.
-      //    If we show Real, we might show Yesterday's.
-      //    If we show Estimate, we show Today's Estimate (which is close to Real).
-      
-      // User complaint: "Shows Estimate".
-      // So they prefer Real (even if potentially old?) OR they know it is new.
-      
-      // Let's commented out the STRICT date check for now, 
-      // but maybe keep a logic to prefer Real if we are in Real mode?
-      
-      // Actually, `fetchFundRealPercent` returning a value implies it found a "Real" value.
-      // If we are in `triggerRealUpdateIfNeeded`, we WANT Real.
-      // Let's trust `fetchFundRealPercent`.
-      // The previous logic (before my "Fix") did NOT check date.
-      // And the user was happy until they found "Previous day displayed as Today".
-      // So I added date check.
-      // Now user says "New data not displaying".
-      
-      // So `fundgz` is definitely lagging.
-      // We need a way to check date from `fetchFundRealPercent`.
-      // Since I can't change the background script (assumed), I have to guess.
-      
-      // Workaround:
-      // If we are in Evening (18:00 - 09:00), we accept the Real value regardless of `fundgz` date.
-      // Why? Because in the evening, "Estimate" is stale (from 15:00).
-      // "Real" is either Yesterday (stale) or Today (fresh).
-      // "Estimate" is definitely not final.
-      // "Real" is *potentially* final.
-      // And usually `fetchFundRealPercent` (crawling EastMoney HTML) updates faster than `fundgz` (JSONP).
-      // So trusting `fetchFundRealPercent` in the evening is the best bet.
-      
-      // During the day (09:30 - 15:00), we DO NOT want to show Yesterday's Real.
-      // We want Estimate.
-      // So we should enforce date check (or block Real) during the day.
-      
-      // So:
-      // If `isBeforeMarketOpen` (00:00 - 09:30) -> Show Real (Yesterday/Friday).
-      // If `isTradingTime` (09:30 - 15:00) -> Show Estimate (Block Real unless date is Today).
-      // If Evening (18:00 - 24:00) -> Show Real (Trust it is Today's, or at least better than Estimate).
-      
-      // Wait, 15:00 - 18:00?
-      // Estimate is frozen. Real is not out.
-      // Show Estimate.
-      
-      // So, only enforce Strict Date Check if we are in "Estimate" window (Daytime)?
-      // But in Evening, we relax it?
-      
-      // Let's try relaxing the check for Evening.
-  }
-  
-  // Revised Logic:
-  // If we are in the "Potential Mismatch" window (Weekdays after 09:30).
-  // We generally expect Today.
-  // But if it is Evening (18:00+), we trust the fetched value even if `fundgz` date is old.
-  
-  const isEvening = currentMinutes >= 18 * 60;
-  
-  if (!isEvening && !isBeforeMarketOpen && dayOfWeek >= 1 && dayOfWeek <= 5) {
-      // Trading hours or afternoon wait (09:30 - 18:00 Weekdays).
-      // We expect Today.
-      // Enforce strict check to prevent Yesterday's Real from showing up.
-      expectedDateStr = todayStr;
-  } else {
-      // Weekend, Morning, or Evening.
-      // We relax the check? 
-      // Actually, my code currently sets `expectedDateStr` correctly for Weekend/Morning.
-      // For Evening, it sets to Today.
-      // And `fundgz` fails.
-      
-      // So, if `isEvening`, we should SKIP the check or allow mismatch?
-      // Let's set `expectedDateStr = null` to signal "Skip Check"?
-      if (isEvening) {
-          expectedDateStr = null; // Skip strict date check in evening
-      }
+    // After 09:30 on weekdays.
+    const isEvening = currentMinutes >= 18 * 60;
+    if (!isEvening && !isBeforeMarketOpen && dayOfWeek >= 1 && dayOfWeek <= 5) {
+        expectedDateStr = todayStr;
+    } else {
+        if (isEvening) {
+            expectedDateStr = null; // Skip strict date check in evening
+        }
+    }
   }
 
 
@@ -1523,16 +913,12 @@ function fetchRealPercentagesForAllFunds() {
 
     // Chain fetchFundInfo first to check date
     const promise = fetchFundInfo(code).then(info => {
-      // If we failed to get info or jzrq, treat as date mismatch
-      // But if info is null/undefined, it might be a network error or parsing error.
-      // If fetchFundInfo fails, it rejects, so we land in .catch block of this promise.
       if (!info || !info.jzrq) {
         throw new Error("Cannot verify date");
       }
       
       const jzrq = info.jzrq.replace(/\//g, "-");
       if (expectedDateStr && jzrq !== expectedDateStr) {
-         // Date mismatch, data is old.
          throw new Error("Data not updated yet");
        }
        
@@ -1546,18 +932,8 @@ function fetchRealPercentagesForAllFunds() {
         }
         return true;
       }).catch((err) => {
-        // If real update fails or date mismatch, fallback to estimate
-        // Only if we don't already have a valid value (e.g. initial load)
-        // Or should we always try to get estimate if real fails?
-        // User request: "真实涨跌未获取到时，显示预估涨跌幅"
-        // This implies if we tried to fetch REAL and failed, we should show ESTIMATE.
-        // But we might already have an estimate displayed from auto-refresh.
-        // If the cell is empty or has old data, fetch estimate.
-        
-        // Let's try to fetch estimate now as fallback
         return fetchFundEstimate(code).then(estimate => {
              const value = formatNumber(estimate);
-             // Don't mark as real
              percentCell.textContent = `${value}%`;
              applyProfitColor(percentCell, estimate);
              if (percentCell.dataset && percentCell.dataset.real) {
@@ -1592,7 +968,6 @@ function fetchRealPercentagesForAllFunds() {
       if (!percentCell.dataset || percentCell.dataset.real !== "true") {
         allDone = false;
       } else {
-        // Save real status
         const percent = parseFloat(percentCell.textContent);
         if (!Number.isNaN(percent)) {
           statusMap[code] = {
@@ -1605,7 +980,6 @@ function fetchRealPercentagesForAllFunds() {
     });
     savePercentStatusToStorage(statusMap);
     
-    // Re-apply sort if active
     if (percentSortOrder) {
       sortTableBy("percent", percentSortOrder);
     } else if (profitSortOrder) {
@@ -1616,51 +990,15 @@ function fetchRealPercentagesForAllFunds() {
   });
 }
 
-function applyProfitColor(element, value) {
-if (!element) {
-return;
-}
-element.classList.remove("value-positive", "value-negative", "value-zero");
-if (Number.isNaN(value)) {
-return;
-}
-if (value > 0) {
-element.classList.add("value-positive");
-} else if (value < 0) {
-element.classList.add("value-negative");
-} else {
-element.classList.add("value-zero");
-}
-}
-
-let realUpdateDone = false;
-
-function isAfterRealUpdateTime() {
-  const now = getChinaDate();
-  const h = now.getHours();
-  const m = now.getMinutes();
-  const t = h * 60 + m;
-  const start = 18 * 60;
-  const end = 22 * 60;
-  return t >= start && t < end;
-}
-
-function isManualRealFetchTime() {
-  const t = getCurrentMinutes();
-  // 18:00 - 09:20 next day
-  return (t >= 18 * 60) || (t < 9 * 60 + 20);
-}
-
-const fetchButton = document.getElementById("fetch-percent-btn");
-  
-  function triggerRealUpdateIfNeeded() {
+function triggerRealUpdateIfNeeded() {
    if (isGlobalFetching) {
      return;
    }
+   const fetchButton = document.getElementById("fetch-percent-btn");
    if (fetchButton) {
-   fetchButton.disabled = true;
-   const icon = fetchButton.querySelector(".refresh-icon");
-   if (icon) icon.classList.add("spinning");
+     fetchButton.disabled = true;
+     const icon = fetchButton.querySelector(".refresh-icon");
+     if (icon) icon.classList.add("spinning");
    }
    
     isGlobalFetching = true;
@@ -1675,13 +1013,12 @@ const fetchButton = document.getElementById("fetch-percent-btn");
         if (icon) icon.classList.remove("spinning");
       }
     });
-  }
+}
 
 function setupDailyRealUpdateScheduler() {
   if (!isChromeExtensionEnv()) {
     return;
   }
-  // Initial check on load
   const status = getAppStatus();
   if (status === APP_STATE.REAL) {
     triggerRealUpdateIfNeeded();
@@ -1704,8 +1041,6 @@ function exportToCSV() {
     const inputs = getFundRowInputs(row);
     const name = inputs.nameInput ? inputs.nameInput.value.trim() : "";
     const code = parseFundCodeFromName(name) || "";
-    const cleanName = name.replace(code, "").trim(); // Remove code from name if present twice? Actually user input is "code name", so let's keep it as is or separate. 
-    // Let's just use the full name value
     const zfb = inputs.zfbInput ? inputs.zfbInput.value : "0.00";
     const stock = inputs.stockInput ? inputs.stockInput.value : "0.00";
     
@@ -1720,13 +1055,12 @@ function exportToCSV() {
     let profit = profitCell ? profitCell.textContent.replace(/,/g, "") : "0.00";
     profit = profit.replace("(实)", "");
 
-    // Escape quotes in name
     const escapedName = `"${name.replace(/"/g, '""')}"`;
     
     csvRows.push([
       index + 1,
       escapedName,
-      `"\t${code}"`, // Tab to prevent Excel auto-formatting as number
+      `"\t${code}"`, 
       zfb,
       stock,
       amount,
@@ -1772,7 +1106,6 @@ function copySummaryReport() {
   rows.forEach((row, index) => {
     const inputs = getFundRowInputs(row);
     const name = inputs.nameInput ? inputs.nameInput.value.trim() : "未命名";
-    // Extract just name part if possible, but full string is fine
     const simpleName = name.split(/\s+/).slice(1).join(" ") || name;
     
     const percentCell = row.querySelector('td[data-role="percent-cell"] span');
@@ -1794,13 +1127,13 @@ function copySummaryReport() {
 }
 
 function initApp() {
-const dateElement = document.getElementById("current-date");
-const tradingStatusElement = document.getElementById("trading-status");
-const tbody = document.getElementById("fund-table-body");
-if (dateElement) {
-dateElement.textContent = getTodayDateString();
-}
-populateTableFromStorage();
+  const dateElement = document.getElementById("current-date");
+  const tradingStatusElement = document.getElementById("trading-status");
+  const tbody = document.getElementById("fund-table-body");
+  if (dateElement) {
+    dateElement.textContent = getTodayDateString();
+  }
+  populateTableFromStorage();
   totalZfbAmountElement = document.getElementById("total-zfb-amount");
   totalStockAmountElement = document.getElementById("total-stock-amount");
   totalAmountElement = document.getElementById("total-amount");
@@ -1838,7 +1171,7 @@ populateTableFromStorage();
   }
 
   if (tbody) {
-  tbody.addEventListener("click", handleTableClick);
+    tbody.addEventListener("click", handleTableClick);
   }
   if (percentHeader) {
     percentHeader.addEventListener("click", () => {
@@ -1886,11 +1219,10 @@ populateTableFromStorage();
       }
     });
   }
-const autoRefreshSeconds = 300;
-let remainingSeconds = autoRefreshSeconds;
+  const autoRefreshSeconds = 300;
+  let remainingSeconds = autoRefreshSeconds;
   function updateCountdown() {
     const status = getAppStatus();
-    // Show paused text if state is PAUSED or (REAL and done)
     const isPaused = status === APP_STATE.PAUSED || (status === APP_STATE.REAL && realUpdateDone);
 
     if (countdownElement) {
@@ -1940,48 +1272,30 @@ let remainingSeconds = autoRefreshSeconds;
   if (fetchPercentButton) {
     fetchPercentButton.addEventListener("click", () => {
       const status = getAppStatus();
-      // If we are in ESTIMATE state, fetch estimate
-      // If we are in REAL state, fetch real
-      // If we are in PAUSED state:
-      //   - If it's between 20:00 and 09:00 (next day), user might want to refresh REAL data manually
-      //   - Otherwise (e.g. 11:30-13:00 or 15:00-20:00), default to ESTIMATE or REAL? 
-      //     Let's stick to the rule: 20:00 - 09:00 -> REAL, others -> ESTIMATE
-      
       const isNightOrMorning = isManualRealFetchTime();
       
       if (status === APP_STATE.REAL || isNightOrMorning || !isTradingDay()) {
-        // Manually trigger real update
         triggerRealUpdateIfNeeded();
       } else {
-        // Default to estimate
         autoFetchPercentages({ useButton: true, showAlert: true });
       }
       
       resetCountdown();
     });
   }
-setupDailyRealUpdateScheduler();
+  setupDailyRealUpdateScheduler();
   
-  // Initial fetch: Always try to fetch data on app open based on current status
   const currentStatus = getAppStatus();
-  // const currentMinutes = getCurrentMinutes(); // Removed unused
   
   if (currentStatus === APP_STATE.ESTIMATE) {
-    // Trading hours: fetch estimates
     autoFetchPercentages({ useButton: false, showAlert: false });
   } else if (currentStatus === APP_STATE.REAL) {
-    // Evening hours: fetch real values
     triggerRealUpdateIfNeeded();
   } else {
-    // PAUSED state (e.g., morning, lunch break, weekend, or night after 22:00)
-    // Check if we should fetch real values (18:00 - 09:20 next day) OR if it is a non-trading day (Weekend)
-    // This logic mirrors the manual refresh button behavior
     const isNightOrMorning = isManualRealFetchTime();
     if (isNightOrMorning || !isTradingDay()) {
         triggerRealUpdateIfNeeded();
     } else {
-       // Otherwise (e.g. 11:30-13:00 break on weekdays)
-       // Let's safe fetch estimates if it's a trading day, even if technically paused
        if (isTradingDay()) {
            autoFetchPercentages({ useButton: false, showAlert: false });
        }
@@ -1994,7 +1308,6 @@ setupDailyRealUpdateScheduler();
       
       const status = getAppStatus();
       
-      // Reset realUpdateDone if we enter ESTIMATE mode (new trading day started)
       if (status === APP_STATE.ESTIMATE && realUpdateDone) {
         realUpdateDone = false;
       }
@@ -2004,8 +1317,6 @@ setupDailyRealUpdateScheduler();
       if (status === APP_STATE.PAUSED) {
         shouldCountdown = false;
       } else if (status === APP_STATE.REAL && realUpdateDone) {
-        // Once real update is done, we stop auto-countdown to save resources.
-        // Manual refresh is still available as blocked checks were removed.
         shouldCountdown = false;
       }
 
@@ -2021,25 +1332,13 @@ setupDailyRealUpdateScheduler();
         }
       }
 
-      // Update countdown display here to ensure it reflects current status immediately
-      // Even if main interval is paused, we want to update the text to "Paused"
       updateCountdown();
     }, 1000);
   }
 }
 
-function updateRowIndices() {
-const rows = getFundRows();
-rows.forEach((row, index) => {
-const indexCell = row.querySelector('td[data-role="row-index"]');
-if (indexCell) {
-indexCell.textContent = String(index + 1);
-}
-});
-}
-
 if (document.readyState === "loading") {
-document.addEventListener("DOMContentLoaded", initApp);
+  document.addEventListener("DOMContentLoaded", initApp);
 } else {
-initApp();
+  initApp();
 }
