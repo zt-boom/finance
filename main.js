@@ -890,14 +890,9 @@ function fetchRealPercentagesForAllFunds() {
     expectedDateStr = `${d.getFullYear()}-${m}-${dy}`;
   } else {
     // After 09:30 on weekdays.
-    const isEvening = currentMinutes >= 18 * 60;
-    if (!isEvening && !isBeforeMarketOpen && dayOfWeek >= 1 && dayOfWeek <= 5) {
-        expectedDateStr = todayStr;
-    } else {
-        if (isEvening) {
-            expectedDateStr = null; // Skip strict date check in evening
-        }
-    }
+    // We expect the data date to be Today.
+    // If it's evening and data is not updated yet, we should fall back to estimate.
+    expectedDateStr = todayStr;
   }
 
 
