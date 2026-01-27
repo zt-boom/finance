@@ -163,7 +163,7 @@ export function fetchFundRealPercent(code) {
             reject(new Error("获取基金真实涨跌幅失败"));
             return;
           }
-          if (!response || !response.ok || typeof response.data !== "number" || Number.isNaN(response.data)) {
+          if (!response || !response.ok || !response.data || typeof response.data.percent !== "number" || Number.isNaN(response.data.percent)) {
             const message = response && response.error ? response.error : "获取基金真实涨跌幅失败";
             reject(new Error(message));
             return;

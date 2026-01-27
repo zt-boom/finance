@@ -46,13 +46,15 @@ async function fetchFundRealPercentByCode(code) {
     throw new Error("解析基金真实涨跌幅失败");
   }
   const rawCell = cells[3];
+  const dateCell = cells[0];
   const textWithoutTags = rawCell.replace(/<[^>]*>/g, "").replace(/&nbsp;/g, "").trim();
+  const dateText = dateCell.replace(/<[^>]*>/g, "").replace(/&nbsp;/g, "").trim();
   const normalized = textWithoutTags.replace("%", "").trim();
   const percent = parseFloat(normalized);
   if (Number.isNaN(percent)) {
     throw new Error("解析基金真实涨跌幅失败");
   }
-  return percent;
+  return { percent, date: dateText };
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -74,8 +76,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "fetchFundRealPercent") {
     const code = message.code;
     fetchFundRealPercentByCode(code)
-      .then(percent => {
-        sendResponse({ ok: true, data: percent });
+      .then(result => {
+        sendResponse({ ok: true, data: result });
       })
       .catch(error => {
         const messageText = error && error.message ? error.message : "获取基金真实涨跌幅失败";

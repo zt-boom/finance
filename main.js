@@ -906,37 +906,34 @@ function fetchRealPercentagesForAllFunds() {
       return;
     }
 
-    // Chain fetchFundInfo first to check date
-    const promise = fetchFundInfo(code).then(info => {
-      if (!info || !info.jzrq) {
-        throw new Error("Cannot verify date");
+    // Chain fetchFundRealPercent first and check its date
+    const promise = fetchFundRealPercent(code).then(result => {
+      const { percent, date } = result;
+      
+      if (expectedDateStr && date !== expectedDateStr) {
+         // Date mismatch, data is old.
+         throw new Error("Data not updated yet");
       }
       
-      const jzrq = info.jzrq.replace(/\//g, "-");
-      if (expectedDateStr && jzrq !== expectedDateStr) {
-         throw new Error("Data not updated yet");
-       }
-       
-       return fetchFundRealPercent(code);
-    }).then(percent => {
-        const value = formatNumber(percent);
-        percentCell.textContent = `${value}%(实)`;
-        applyProfitColor(percentCell, percent);
-        if (percentCell.dataset) {
-          percentCell.dataset.real = "true";
-        }
-        return true;
-      }).catch((err) => {
-        return fetchFundEstimate(code).then(estimate => {
-             const value = formatNumber(estimate);
-             percentCell.textContent = `${value}%`;
-             applyProfitColor(percentCell, estimate);
-             if (percentCell.dataset && percentCell.dataset.real) {
-               delete percentCell.dataset.real;
-             }
-             return true;
-        }).catch(() => false);
-      });
+      const value = formatNumber(percent);
+      percentCell.textContent = `${value}%(实)`;
+      applyProfitColor(percentCell, percent);
+      if (percentCell.dataset) {
+        percentCell.dataset.real = "true";
+      }
+      return true;
+    }).catch((err) => {
+      // If real update fails or date mismatch, fallback to estimate
+      return fetchFundEstimate(code).then(estimate => {
+           const value = formatNumber(estimate);
+           percentCell.textContent = `${value}%`;
+           applyProfitColor(percentCell, estimate);
+           if (percentCell.dataset && percentCell.dataset.real) {
+             delete percentCell.dataset.real;
+           }
+           return true;
+      }).catch(() => false);
+    });
     promises.push(promise);
   });
   
