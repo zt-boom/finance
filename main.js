@@ -1211,7 +1211,7 @@ function initApp() {
       }
     });
   }
-  const autoRefreshSeconds = 300;
+  const autoRefreshSeconds = 60;
   let remainingSeconds = autoRefreshSeconds;
   function updateCountdown() {
     const status = getAppStatus();
