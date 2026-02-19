@@ -110,6 +110,23 @@ margin-bottom: 12px;
  border-bottom: 1px solid #e5e7eb;
  padding: 10px 8px;
  text-align: left;
+ transition: background-color 0.3s ease;
+}
+
+.fund-table tr.updating td {
+  background-color: rgba(37, 99, 235, 0.05);
+}
+
+.fund-table td[data-role="row-index"] {
+  position: relative;
+}
+
+.fund-table tr.drag-over-top td {
+  border-top: 2px solid #2563eb;
+}
+
+.fund-table tr.drag-over-bottom td {
+  border-bottom: 2px solid #2563eb;
 }
 
 .fund-table th.index-col,

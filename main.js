@@ -61,6 +61,9 @@ const APP_STATE = {
 
 const handleDebouncedStorageUpdate = createDebounced(handleStorageUpdate, APP_CONFIG.STORAGE_DEBOUNCE);
 const scheduleProfit = createDebounced(calculateProfit, APP_CONFIG.PROFIT_CALC_DEBOUNCE);
+const handleDebouncedNameInput = createDebounced((input) => {
+    tryFetchFundByInput(input, { showAlertOnMissing: false });
+}, APP_CONFIG.INPUT_DEBOUNCE);
 
 // --- UI Helpers ---
 
@@ -307,14 +310,19 @@ function calculateProfit() {
     let validCalc = false;
 
     if (amount > 0 && !Number.isNaN(percent)) {
-      zfbProfit = normalizedZfb * percent / 100;
-      stockProfit = normalizedStock * percent / 100;
-      rowProfit = zfbProfit + stockProfit;
-      validCalc = true;
-
-      totalZfbProfit += zfbProfit;
-      totalStockProfit += stockProfit;
-      totalProfit += rowProfit;
+      try {
+        zfbProfit = normalizedZfb * percent / 100;
+        stockProfit = normalizedStock * percent / 100;
+        rowProfit = zfbProfit + stockProfit;
+        validCalc = true;
+  
+        totalZfbProfit += zfbProfit;
+        totalStockProfit += stockProfit;
+        totalProfit += rowProfit;
+      } catch(e) {
+          console.error("Calculation error for row", row, e);
+          validCalc = false;
+      }
     }
 
     updates.push({
@@ -406,10 +414,16 @@ function calculateProfit() {
 
 // --- Event Handlers ---
 
+function handleNameInput(event) {
+  const input = event.currentTarget;
+  handleStorageUpdate();
+  handleDebouncedNameInput(input);
+}
+
 function handleNameBlur(event) {
   const input = event.currentTarget;
   handleStorageUpdate(); // Blur can be immediate
-  tryFetchFundByInput(input, { showAlertOnMissing: false });
+  // Blur 时不再触发查询，避免与 Debounce 冲突或重复查询
 }
 
 function handleNameKeyDown(event) {
@@ -514,33 +528,62 @@ function handleRowDragOver(event) {
   if (event.dataTransfer) {
     event.dataTransfer.dropEffect = "move";
   }
+  
+  const targetCell = event.currentTarget;
+  const targetRow = targetCell.parentElement;
+  
+  if (dragSourceRow && targetRow !== dragSourceRow) {
+      const rect = targetRow.getBoundingClientRect();
+      const midY = rect.top + rect.height / 2;
+      
+      // Clear previous styles
+      const rows = getFundRows();
+      rows.forEach(r => r.classList.remove('drag-over-top', 'drag-over-bottom'));
+      
+      if (event.clientY < midY) {
+          targetRow.classList.add('drag-over-top');
+      } else {
+          targetRow.classList.add('drag-over-bottom');
+      }
+  }
 }
 
 function handleRowDrop(event) {
   event.preventDefault();
   const targetCell = event.currentTarget;
   const targetRow = targetCell.parentElement;
+  
+  // Clear styles
+  const rows = getFundRows();
+  rows.forEach(r => r.classList.remove('drag-over-top', 'drag-over-bottom'));
+  
   if (!dragSourceRow || dragSourceRow === targetRow) {
     return;
   }
   const tbody = targetRow.parentElement;
-  const rows = Array.from(tbody.querySelectorAll('tr[data-role="fund-row"]'));
-  const sourceIndex = rows.indexOf(dragSourceRow);
-  const targetIndex = rows.indexOf(targetRow);
+  const allRows = Array.from(tbody.querySelectorAll('tr[data-role="fund-row"]'));
+  const sourceIndex = allRows.indexOf(dragSourceRow);
+  const targetIndex = allRows.indexOf(targetRow);
   if (sourceIndex === -1 || targetIndex === -1) {
     return;
   }
-  if (sourceIndex < targetIndex) {
-    tbody.insertBefore(dragSourceRow, targetRow.nextSibling);
+  
+  const rect = targetRow.getBoundingClientRect();
+  const midY = rect.top + rect.height / 2;
+  
+  if (event.clientY < midY) {
+      // Insert before
+      tbody.insertBefore(dragSourceRow, targetRow);
   } else {
-    tbody.insertBefore(dragSourceRow, targetRow);
+      // Insert after
+      tbody.insertBefore(dragSourceRow, targetRow.nextSibling);
   }
 }
 
 function handleRowDragEnd() {
   const rows = getFundRows();
   rows.forEach(row => {
-    row.classList.remove("dragging");
+    row.classList.remove("dragging", "drag-over-top", "drag-over-bottom");
   });
   dragSourceRow = null;
   updateRowIndices();
@@ -565,6 +608,7 @@ function createTableRow(fund) {
   nameInput.value = fund.name || "";
   nameInput.placeholder = "请输入6位基金代码，例如：110022";
   nameInput.addEventListener("change", handleStorageUpdate);
+  nameInput.addEventListener("input", handleNameInput);
   nameInput.addEventListener("blur", handleNameBlur);
   nameInput.addEventListener("keydown", handleNameKeyDown);
   const zfbInput = document.createElement("input");
@@ -809,6 +853,9 @@ function autoFetchPercentages(options) {
     if (!onlyEstimates && percentCell.dataset && percentCell.dataset.real) {
       return;
     }
+    
+    // Add updating visual feedback
+    row.classList.add("updating");
 
     const promise = fetchFundEstimate(code).then(percent => {
       // 优化：统一更新 DOM 逻辑
@@ -835,6 +882,9 @@ function autoFetchPercentages(options) {
         return true; // We handled it by setting to 0
       }
       return false;
+    }).finally(() => {
+        // Remove updating visual feedback
+        row.classList.remove("updating");
     });
     promises.push(promise);
   });
@@ -932,6 +982,9 @@ function fetchRealPercentagesForAllFunds() {
     }
 
     // Chain fetchFundRealPercent first and check its date
+    // Add updating visual feedback
+    row.classList.add("updating");
+    
     const promise = fetchFundRealPercent(code).then(result => {
       const { percent, date } = result;
       
@@ -962,6 +1015,9 @@ function fetchRealPercentagesForAllFunds() {
            }
            return true;
       }).catch(() => false);
+    }).finally(() => {
+        // Remove updating visual feedback
+        row.classList.remove("updating");
     });
     promises.push(promise);
   });

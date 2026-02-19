@@ -25,6 +25,9 @@ export const APP_CONFIG = {
   // 收益计算防抖时间（毫秒）
   PROFIT_CALC_DEBOUNCE: 60,
   
+  // 输入框防抖时间（毫秒）
+  INPUT_DEBOUNCE: 500,
+  
   // 颜色配置
   COLORS: {
     POSITIVE: "#ef4444",
