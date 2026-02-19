@@ -1103,69 +1103,79 @@ function setupDailyRealUpdateScheduler() {
   }
 }
 
-function exportToCSV() {
-  const rows = getFundRows();
-  if (rows.length === 0) {
-    window.alert("暂无数据可导出");
-    return;
-  }
 
-  const csvRows = [];
-  // Header
-  csvRows.push(["序号", "名称", "代码", "ZFB持仓", "证券持仓", "持仓金额", "预估涨跌(%)", "预估收益(元)"].join(","));
-
-  // Data rows
-  rows.forEach((row, index) => {
-    const inputs = getFundRowInputs(row);
-    const name = inputs.nameInput ? inputs.nameInput.value.trim() : "";
-    const code = parseFundCodeFromName(name) || "";
-    const zfb = inputs.zfbInput ? inputs.zfbInput.value : "0.00";
-    const stock = inputs.stockInput ? inputs.stockInput.value : "0.00";
-    
-    const amountSpan = row.querySelector('span[data-role="amount-display"]');
-    const amount = amountSpan ? amountSpan.textContent.replace(/,/g, "") : "0.00";
-    
-    const percentCell = row.querySelector('td[data-role="percent-cell"] span');
-    let percent = percentCell ? percentCell.textContent : "0.00%";
-    percent = percent.replace("%", "").replace("(实)", "");
-    
-    const profitCell = row.querySelector('td[data-role="profit-cell"] span');
-    let profit = profitCell ? profitCell.textContent.replace(/,/g, "") : "0.00";
-    profit = profit.replace("(实)", "");
-
-    const escapedName = `"${name.replace(/"/g, '""')}"`;
-    
-    csvRows.push([
-      index + 1,
-      escapedName,
-      `"\t${code}"`, 
-      zfb,
-      stock,
-      amount,
-      percent,
-      profit
-    ].join(","));
-  });
-
-  // Footer (Summary)
-  const totalAmount = document.getElementById("total-amount").textContent.replace(/,/g, "");
-  const totalProfit = document.getElementById("total-profit").textContent.replace(/,/g, "");
-  const totalPercent = document.getElementById("total-percent").textContent.replace("%", "");
-  
-  csvRows.push([]);
-  csvRows.push(["", "合计", "", "", "", totalAmount, totalPercent, totalProfit].join(","));
-
-  const csvString = "\uFEFF" + csvRows.join("\n"); // BOM for Excel
-  const blob = new Blob([csvString], { type: "text/csv;charset=utf-8;" });
+function exportConfig() {
+  const holdings = loadHoldingsFromStorage();
+  const config = {
+    version: 1,
+    exportDate: getTodayDateString(),
+    holdings: holdings
+  };
+  const jsonString = JSON.stringify(config, null, 2);
+  const blob = new Blob([jsonString], { type: "application/json;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   
   const link = document.createElement("a");
   link.setAttribute("href", url);
   const dateStr = getTodayDateString().split(" ")[0];
-  link.setAttribute("download", `基金预估收益_${dateStr}.csv`);
+  link.setAttribute("download", `finance_config_${dateStr}.json`);
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+}
+
+function importConfig(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const config = JSON.parse(e.target.result);
+      if (config && Array.isArray(config.holdings)) {
+        if (confirm(`检测到 ${config.holdings.length} 条持仓记录，确认覆盖当前配置吗？`)) {
+          saveHoldingsToStorage(config.holdings);
+          populateTableFromStorage();
+          alert("配置导入成功！");
+        }
+      } else {
+        alert("无效的配置文件格式");
+      }
+    } catch (err) {
+      console.error("Import error", err);
+      alert("读取配置文件失败");
+    }
+    // Reset input
+    event.target.value = "";
+  };
+  reader.readAsText(file);
+}
+
+function handleKeyboardShortcuts(event) {
+  // Cmd/Ctrl + R: Refresh
+  if ((event.metaKey || event.ctrlKey) && event.key === 'r') {
+    event.preventDefault();
+    const fetchBtn = document.getElementById("fetch-percent-btn");
+    if (fetchBtn) fetchBtn.click();
+    return;
+  }
+  
+  // Cmd/Ctrl + I: Focus Input (Add Fund)
+  if ((event.metaKey || event.ctrlKey) && event.key === 'i') {
+    event.preventDefault();
+    const addBtn = document.getElementById("add-fund-btn");
+    if (addBtn) addBtn.click();
+    // After adding row, focus the first input of the last row
+    setTimeout(() => {
+        const rows = getFundRows();
+        if (rows.length > 0) {
+            const lastRow = rows[rows.length - 1];
+            const inputs = getFundRowInputs(lastRow);
+            if (inputs.nameInput) inputs.nameInput.focus();
+        }
+    }, 50);
+    return;
+  }
 }
 
 function copySummaryReport() {
@@ -1229,9 +1239,15 @@ async function initApp() {
   totalProfitElement = document.getElementById("total-profit");
   const addFundButton = document.getElementById("add-fund-btn");
   const fetchPercentButton = document.getElementById("fetch-percent-btn");
-  const exportButton = document.getElementById("export-btn");
+
+  const exportConfigButton = document.getElementById("export-config-btn");
+  const importButton = document.getElementById("import-btn");
+  const importInput = document.getElementById("import-file-input");
+  
   const countdownElement = document.getElementById("fetch-btn-status");
   const summaryRow = document.querySelector(".summary-row");
+
+  document.addEventListener("keydown", handleKeyboardShortcuts);
 
   percentHeader = document.querySelector('th[data-sort="percent"]');
   profitHeader = document.querySelector('th[data-sort="profit"]');
@@ -1352,8 +1368,13 @@ async function initApp() {
       updateRowIndices();
     });
   }
-  if (exportButton) {
-    exportButton.addEventListener("click", exportToCSV);
+
+  if (exportConfigButton) {
+    exportConfigButton.addEventListener("click", exportConfig);
+  }
+  if (importButton && importInput) {
+    importButton.addEventListener("click", () => importInput.click());
+    importInput.addEventListener("change", importConfig);
   }
   if (fetchPercentButton) {
     fetchPercentButton.addEventListener("click", () => {

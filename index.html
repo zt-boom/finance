@@ -30,12 +30,19 @@
   </svg>
   <span>添加</span>
 </button>
-<button id="export-btn" class="secondary-button" title="导出CSV">
-  <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
-  </svg>
-  <span>导出</span>
-</button>
+  <button id="import-btn" class="secondary-button" title="导入配置">
+    <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+    </svg>
+    <span>导入</span>
+  </button>
+  <button id="export-config-btn" class="secondary-button" title="导出配置">
+    <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+    </svg>
+    <span>导出</span>
+  </button>
+
 <button id="fetch-percent-btn" class="secondary-button">
   <svg class="btn-icon refresh-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
     <path d="M23 4v6h-6M1 20v-6h6"/>
@@ -83,6 +90,7 @@
 </section>
 </main>
 </div>
+<input type="file" id="import-file-input" accept=".json" style="display: none;">
 <script type="module" src="./main.js"></script>
 </body>
 </html>
