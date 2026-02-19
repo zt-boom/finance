@@ -11,7 +11,8 @@
     "https://*.eastmoney.com/*"
   ],
   "permissions": [
-    "tabs"
+    "storage",
+    "alarms"
   ],
   "background": {
     "service_worker": "background.js"

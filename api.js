@@ -1,6 +1,9 @@
 import { isChromeExtensionEnv } from './utils.js';
+import { APP_CONFIG } from './config.js';
 
 const fundJsonpMap = new Map();
+// 用于存储正在进行的请求 Promise，实现请求去重
+const pendingRequests = new Map();
 
 function ensureJsonpHandler() {
   if (window._fundJsonpInitialized) {
@@ -41,7 +44,7 @@ function ensureJsonpHandler() {
 
 function fetchFundJsonp(code, transform) {
   return new Promise((resolve, reject) => {
-    const timeoutMs = 8000;
+    const timeoutMs = APP_CONFIG.REQUEST_TIMEOUT;
     let timer = null;
     let requestObj = null;
 
@@ -123,10 +126,16 @@ function fetchFundJsonViaExtension(code) {
       reject(new Error("当前环境不是 Chrome 插件"));
       return;
     }
+    // 添加超时保护
+    const timer = setTimeout(() => {
+        reject(new Error("请求超时"));
+    }, APP_CONFIG.REQUEST_TIMEOUT);
+
     try {
       chrome.runtime.sendMessage(
         { type: "fetchFundJson", code },
         response => {
+          clearTimeout(timer);
           if (chrome.runtime.lastError) {
             reject(new Error("获取基金数据失败"));
             return;
@@ -140,13 +149,50 @@ function fetchFundJsonViaExtension(code) {
         }
       );
     } catch (e) {
+      clearTimeout(timer);
       reject(new Error("获取基金数据失败"));
     }
   });
 }
 
+/**
+ * 带重试机制的通用 Fetch 函数
+ * @param {Function} fetchFn - 执行请求的函数，返回 Promise
+ * @param {string} requestKey - 请求唯一标识，用于去重
+ * @param {number} retries - 剩余重试次数
+ * @returns {Promise<any>}
+ */
+async function fetchWithRetry(fetchFn, requestKey, retries = APP_CONFIG.MAX_RETRIES) {
+  // 请求去重：如果已有相同的请求在进行中，直接返回该 Promise
+  if (pendingRequests.has(requestKey)) {
+    return pendingRequests.get(requestKey);
+  }
+
+  const promise = (async () => {
+    try {
+      return await fetchFn();
+    } catch (error) {
+      if (retries > 0) {
+        // 等待一段时间后重试
+        await new Promise(resolve => setTimeout(resolve, APP_CONFIG.RETRY_DELAY));
+        // 递归重试，不经过 pendingRequests 缓存，因为上一次失败了
+        return fetchWithRetry(fetchFn, `${requestKey}_retry_${retries}`, retries - 1);
+      }
+      throw error;
+    } finally {
+        // 请求完成（无论成功失败），移除缓存
+        if (pendingRequests.get(requestKey) === promise) {
+            pendingRequests.delete(requestKey);
+        }
+    }
+  })();
+
+  pendingRequests.set(requestKey, promise);
+  return promise;
+}
+
 export function fetchFundRealPercent(code) {
-  return new Promise((resolve, reject) => {
+  const fetchFn = () => new Promise((resolve, reject) => {
     if (!code) {
       reject(new Error("缺少基金代码"));
       return;
@@ -155,10 +201,17 @@ export function fetchFundRealPercent(code) {
       reject(new Error("当前环境不是 Chrome 插件"));
       return;
     }
+    
+    // 添加超时保护
+    const timer = setTimeout(() => {
+        reject(new Error("请求超时"));
+    }, APP_CONFIG.REQUEST_TIMEOUT);
+
     try {
       chrome.runtime.sendMessage(
         { type: "fetchFundRealPercent", code },
         response => {
+          clearTimeout(timer);
           if (chrome.runtime.lastError) {
             reject(new Error("获取基金真实涨跌幅失败"));
             return;
@@ -172,34 +225,29 @@ export function fetchFundRealPercent(code) {
         }
       );
     } catch (e) {
+      clearTimeout(timer);
       reject(new Error("获取基金真实涨跌幅失败"));
     }
   });
+
+  return fetchWithRetry(fetchFn, `real_${code}`);
 }
 
 export function fetchFundEstimate(code) {
-  return new Promise((resolve, reject) => {
+  const fetchFn = () => new Promise((resolve, reject) => {
     if (!code) {
       reject(new Error("缺少基金代码"));
       return;
     }
     if (isChromeExtensionEnv()) {
-      // Add timeout for extension calls too
-      const timeoutMs = 8000;
-      let timer = setTimeout(() => reject(new Error("请求超时")), timeoutMs);
-
       fetchFundJsonViaExtension(code).then(data => {
-        clearTimeout(timer);
         const percent = parseFloat(data.gszzl);
         if (Number.isNaN(percent)) {
           reject(new Error("无效的涨跌幅数据"));
           return;
         }
         resolve(percent);
-      }).catch(err => {
-        clearTimeout(timer);
-        reject(err);
-      });
+      }).catch(reject);
       return;
     }
 
@@ -211,30 +259,26 @@ export function fetchFundEstimate(code) {
       return percent;
     }).then(resolve).catch(reject);
   });
+
+  return fetchWithRetry(fetchFn, `estimate_${code}`);
 }
 
 export function fetchFundInfo(code) {
-  return new Promise((resolve, reject) => {
+  const fetchFn = () => new Promise((resolve, reject) => {
     if (!code) {
       reject(new Error("缺少基金代码"));
       return;
     }
     if (isChromeExtensionEnv()) {
-      const timeoutMs = 8000;
-      let timer = setTimeout(() => reject(new Error("请求超时")), timeoutMs);
-
-      fetchFundJsonViaExtension(code).then(data => {
-        clearTimeout(timer);
-        resolve(data);
-      }).catch(err => {
-        clearTimeout(timer);
-        reject(err);
-      });
+      fetchFundJsonViaExtension(code).then(resolve).catch(reject);
       return;
     }
 
     fetchFundJsonp(code, data => data).then(resolve).catch(reject);
   });
+  
+  // 基金基本信息通常不常变，也可以重试，但通常只在添加时调用一次
+  return fetchWithRetry(fetchFn, `info_${code}`);
 }
 
 export function updateExtensionBadge(value) {
@@ -268,12 +312,12 @@ export function updateExtensionBadge(value) {
       }
     }
   }
-  let color = "#6b7280";
+  let color = APP_CONFIG.COLORS.ZERO;
   if (!Number.isNaN(value)) {
     if (value > 0) {
-      color = "#ef4444";
+      color = APP_CONFIG.COLORS.POSITIVE;
     } else if (value < 0) {
-      color = "#10b981";
+      color = APP_CONFIG.COLORS.NEGATIVE;
     }
   }
   try {

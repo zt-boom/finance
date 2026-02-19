@@ -16,8 +16,13 @@ import {
   loadPercentStatusFromStorage,
   savePercentStatusToStorage,
   loadSortStatusFromStorage,
-  saveSortStatusToStorage
+  saveSortStatusToStorage,
+  initStorage,
+  loadTrendHistoryFromStorage,
+  saveTrendPointToStorage
 } from './storage.js';
+
+import { drawTrendChart } from './chart.js';
 
 import {
   fetchFundRealPercent,
@@ -25,6 +30,8 @@ import {
   fetchFundInfo,
   updateExtensionBadge
 } from './api.js';
+
+import { APP_CONFIG } from './config.js';
 
 let dragSourceRow = null;
 let isGlobalFetching = false;
@@ -52,8 +59,8 @@ const APP_STATE = {
   PAUSED: "PAUSED"
 };
 
-const handleDebouncedStorageUpdate = createDebounced(handleStorageUpdate, 500);
-const scheduleProfit = createDebounced(calculateProfit, 60);
+const handleDebouncedStorageUpdate = createDebounced(handleStorageUpdate, APP_CONFIG.STORAGE_DEBOUNCE);
+const scheduleProfit = createDebounced(calculateProfit, APP_CONFIG.PROFIT_CALC_DEBOUNCE);
 
 // --- UI Helpers ---
 
@@ -177,11 +184,11 @@ function getAppStatus() {
 
   const t = now.getHours() * 60 + now.getMinutes();
 
-  if (t >= 9 * 60 + 20 && t < 15 * 60 + 10) {
+  if (t >= APP_CONFIG.TRADING_HOURS.MORNING_START && t < APP_CONFIG.TRADING_HOURS.AFTERNOON_END) {
     return APP_STATE.ESTIMATE;
   }
 
-  if (t >= 18 * 60 && t < 22 * 60) {
+  if (t >= APP_CONFIG.TRADING_HOURS.EVENING_START && t < APP_CONFIG.TRADING_HOURS.EVENING_END) {
     return APP_STATE.REAL;
   }
 
@@ -201,7 +208,7 @@ function shouldShowEstimateOnly() {
 function isManualRealFetchTime() {
   const t = getCurrentMinutes();
   // 18:00 - 09:20 next day
-  return (t >= 18 * 60) || (t < 9 * 60 + 20);
+  return (t >= APP_CONFIG.TRADING_HOURS.EVENING_START) || (t < APP_CONFIG.TRADING_HOURS.MORNING_START);
 }
 
 function tryFetchFundByInput(nameInput, options) {
@@ -277,7 +284,15 @@ function calculateProfit() {
     const normalizedZfb = Number.isNaN(zfbAmount) ? 0 : zfbAmount;
     const normalizedStock = Number.isNaN(stockAmount) ? 0 : stockAmount;
     const amount = normalizedZfb + normalizedStock;
-    const percent = percentCell ? parseFloat(percentCell.textContent) : NaN;
+    
+    // 优化：优先从 dataset 读取数值，避免 parseFloat 文本
+    let percent = NaN;
+    if (percentCell && percentCell.dataset && percentCell.dataset.value) {
+        percent = parseFloat(percentCell.dataset.value);
+    } else {
+        percent = percentCell ? parseFloat(percentCell.textContent) : NaN;
+    }
+    
     const isReal = percentCell && percentCell.dataset && percentCell.dataset.real === "true";
 
     totalZfbAmount += normalizedZfb;
@@ -373,6 +388,19 @@ function calculateProfit() {
 
   if (isChromeExtensionEnv()) {
     updateExtensionBadge(totalProfit);
+  }
+  
+  // 更新图表
+  const now = new Date();
+  const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  
+  // 只有在交易时间或有意义的时刻才记录
+  // 简单起见，只要有数据变化且是今天，就记录
+  saveTrendPointToStorage({ time: timeStr, profit: totalProfit });
+  
+  const history = loadTrendHistoryFromStorage();
+  if (history && history.data) {
+      drawTrendChart("trend-chart-container", history.data);
   }
 }
 
@@ -646,6 +674,10 @@ function handleStorageUpdate() {
 
 function getRowPercent(row) {
   const percentCell = row.querySelector('td[data-role="percent-cell"] span');
+  // 优化：优先从 dataset 读取数值
+  if (percentCell && percentCell.dataset && percentCell.dataset.value) {
+    return parseFloat(percentCell.dataset.value);
+  }
   const v = percentCell ? parseFloat(percentCell.textContent) : NaN;
   return v;
 }
@@ -739,6 +771,8 @@ function populateTableFromStorage() {
           if (percentCell) {
              percentCell.textContent = `${formatNumber(status.percent)}%(实)`;
              percentCell.dataset.real = "true";
+             // 优化：写入 dataset.value
+             percentCell.dataset.value = status.percent;
              applyProfitColor(percentCell, status.percent);
           }
         }
@@ -777,32 +811,23 @@ function autoFetchPercentages(options) {
     }
 
     const promise = fetchFundEstimate(code).then(percent => {
-      if (onlyEstimates) {
-         // After 9:00, show estimate or 0
-         const value = percent === 0 ? "0.00" : formatNumber(percent);
-         percentCell.textContent = `${value}%`;
-         applyProfitColor(percentCell, percent);
-         if (percentCell.dataset && percentCell.dataset.real) {
-           delete percentCell.dataset.real;
-         }
-         return true;
-      } else {
-        // Before 9:00, if we got here, it means we didn't have a real value.
-        if (percent === 0) {
-          return true;
-        }
-        const value = formatNumber(percent);
-        percentCell.textContent = `${value}%`;
-        applyProfitColor(percentCell, percent);
-        if (percentCell.dataset && percentCell.dataset.real) {
-          delete percentCell.dataset.real;
-        }
-        return true;
+      // 优化：统一更新 DOM 逻辑
+      const value = formatNumber(percent);
+      const suffix = onlyEstimates ? "" : ""; // Estimate has no suffix
+      percentCell.textContent = `${value}%${suffix}`;
+      // 优化：写入 dataset.value
+      percentCell.dataset.value = percent;
+      applyProfitColor(percentCell, percent);
+      
+      if (percentCell.dataset && percentCell.dataset.real) {
+        delete percentCell.dataset.real;
       }
+      return true;
     }).catch(() => {
       // On failure
       if (onlyEstimates) {
         percentCell.textContent = "0.00%";
+        percentCell.dataset.value = 0;
         applyProfitColor(percentCell, 0);
         if (percentCell.dataset && percentCell.dataset.real) {
           delete percentCell.dataset.real;
@@ -917,6 +942,8 @@ function fetchRealPercentagesForAllFunds() {
       
       const value = formatNumber(percent);
       percentCell.textContent = `${value}%(实)`;
+      // 优化：写入 dataset.value
+      percentCell.dataset.value = percent;
       applyProfitColor(percentCell, percent);
       if (percentCell.dataset) {
         percentCell.dataset.real = "true";
@@ -927,6 +954,8 @@ function fetchRealPercentagesForAllFunds() {
       return fetchFundEstimate(code).then(estimate => {
            const value = formatNumber(estimate);
            percentCell.textContent = `${value}%`;
+           // 优化：写入 dataset.value
+           percentCell.dataset.value = estimate;
            applyProfitColor(percentCell, estimate);
            if (percentCell.dataset && percentCell.dataset.real) {
              delete percentCell.dataset.real;
@@ -960,7 +989,8 @@ function fetchRealPercentagesForAllFunds() {
       if (!percentCell.dataset || percentCell.dataset.real !== "true") {
         allDone = false;
       } else {
-        const percent = parseFloat(percentCell.textContent);
+        // 优化：优先从 dataset 读取数值
+        const percent = percentCell.dataset.value ? parseFloat(percentCell.dataset.value) : parseFloat(percentCell.textContent);
         if (!Number.isNaN(percent)) {
           statusMap[code] = {
             percent,
@@ -1118,13 +1148,21 @@ function copySummaryReport() {
   });
 }
 
-function initApp() {
+async function initApp() {
+  await initStorage();
   const dateElement = document.getElementById("current-date");
   const tradingStatusElement = document.getElementById("trading-status");
   const tbody = document.getElementById("fund-table-body");
   if (dateElement) {
     dateElement.textContent = getTodayDateString();
   }
+  
+  // 初始绘制图表
+  const history = loadTrendHistoryFromStorage();
+  if (history && history.data) {
+      drawTrendChart("trend-chart-container", history.data);
+  }
+  
   populateTableFromStorage();
   totalZfbAmountElement = document.getElementById("total-zfb-amount");
   totalStockAmountElement = document.getElementById("total-stock-amount");
@@ -1211,7 +1249,7 @@ function initApp() {
       }
     });
   }
-  const autoRefreshSeconds = 60;
+  const autoRefreshSeconds = APP_CONFIG.REFRESH_INTERVAL;
   let remainingSeconds = autoRefreshSeconds;
   function updateCountdown() {
     const status = getAppStatus();
