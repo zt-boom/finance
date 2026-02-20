@@ -281,6 +281,43 @@ export function fetchFundInfo(code) {
   return fetchWithRetry(fetchFn, `info_${code}`);
 }
 
+export function searchFund(keyword) {
+  return new Promise((resolve, reject) => {
+    if (!keyword) {
+      reject(new Error("缺少搜索关键词"));
+      return;
+    }
+    
+    if (isChromeExtensionEnv()) {
+      chrome.runtime.sendMessage(
+        { type: "searchFund", keyword },
+        response => {
+          if (chrome.runtime.lastError) {
+            reject(new Error("搜索基金失败"));
+            return;
+          }
+          if (!response || !response.ok) {
+            reject(new Error(response?.error || "搜索基金失败"));
+            return;
+          }
+          resolve(response.data);
+        }
+      );
+      return;
+    }
+
+    // 非插件环境，尝试直接请求（可能会有跨域问题，但作为 fallback）
+    const url = `https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx?m=1&key=${encodeURIComponent(keyword)}`;
+    fetch(url)
+      .then(r => r.json())
+      .then(data => {
+        if (data.ErrCode !== 0) throw new Error(data.ErrMsg);
+        resolve(data.Datas || []);
+      })
+      .catch(reject);
+  });
+}
+
 export function updateExtensionBadge(value) {
   if (!isChromeExtensionEnv()) {
     return;

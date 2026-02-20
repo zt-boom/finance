@@ -75,7 +75,8 @@ import {
   fetchFundRealPercent,
   fetchFundEstimate,
   fetchFundInfo,
-  updateExtensionBadge
+  updateExtensionBadge,
+  searchFund
 } from './api.js';
 
 import { APP_CONFIG } from './config.js';
@@ -84,6 +85,9 @@ let dragSourceRow = null;
 let isGlobalFetching = false;
 let realUpdateDone = false;
 let originalOrderSnapshot = null;
+
+let selectedFunds = new Map();
+let currentSearchResults = [];
 
 let totalZfbAmountElement = null;
 let totalStockAmountElement = null;
@@ -111,6 +115,8 @@ const scheduleProfit = createDebounced(calculateProfit, APP_CONFIG.PROFIT_CALC_D
 const handleDebouncedNameInput = createDebounced((input) => {
     tryFetchFundByInput(input, { showAlertOnMissing: false });
 }, APP_CONFIG.INPUT_DEBOUNCE);
+
+const handleDebouncedSearch = createDebounced(performSearch, 500);
 
 // --- UI Helpers ---
 
@@ -1323,6 +1329,173 @@ function copySummaryReport() {
   });
 }
 
+// --- Modal Logic ---
+
+function openAddFundModal() {
+  const modal = document.getElementById("add-fund-modal");
+  const input = document.getElementById("fund-search-input");
+  if (modal) {
+    modal.classList.add("open");
+    selectedFunds.clear();
+    currentSearchResults = [];
+    updateSelectedCount();
+    renderSearchResults([]);
+    if (input) {
+      input.value = "";
+      input.focus();
+    }
+  }
+}
+
+function closeAddFundModal() {
+  const modal = document.getElementById("add-fund-modal");
+  if (modal) {
+    modal.classList.remove("open");
+  }
+}
+
+function performSearch(keyword) {
+  if (!keyword) {
+    renderSearchResults([]);
+    return;
+  }
+  
+  const resultsContainer = document.getElementById("search-results-list");
+  if (resultsContainer) {
+      resultsContainer.innerHTML = '<div class="empty-state">搜索中...</div>';
+  }
+
+  searchFund(keyword).then(data => {
+    currentSearchResults = data;
+    renderSearchResults(data);
+  }).catch(err => {
+    console.error(err);
+    if (resultsContainer) {
+        resultsContainer.innerHTML = '<div class="empty-state">搜索失败，请稍后重试</div>';
+    }
+  });
+}
+
+function renderSearchResults(data) {
+  const container = document.getElementById("search-results-list");
+  if (!container) return;
+  
+  container.innerHTML = "";
+  
+  if (!data || data.length === 0) {
+    container.innerHTML = '<div class="empty-state">未找到相关基金</div>';
+    return;
+  }
+  
+  const fragment = document.createDocumentFragment();
+  
+  data.forEach(fund => {
+    // Only show Funds (CATEGORYDESC === "基金")
+    if (fund.CATEGORYDESC !== "基金") return;
+    
+    const item = document.createElement("div");
+    item.className = "search-result-item";
+    if (selectedFunds.has(fund.CODE)) {
+      item.classList.add("selected");
+    }
+    
+    item.innerHTML = `
+      <div class="item-checkbox">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" style="width:10px;height:10px;display:${selectedFunds.has(fund.CODE) ? 'block' : 'none'}">
+          <path d="M20 6L9 17l-5-5"/>
+        </svg>
+      </div>
+      <div class="item-info" style="display:flex;align-items:center;width:100%">
+        <span class="item-code">${fund.CODE}</span>
+        <span class="item-name">${fund.NAME}</span>
+        <span class="item-type">${fund.FundBaseInfo ? fund.FundBaseInfo.FTYPE : "基金"}</span>
+      </div>
+    `;
+    
+    item.addEventListener("click", () => toggleSelectFund(fund, item));
+    fragment.appendChild(item);
+  });
+  
+  if (fragment.children.length === 0) {
+      container.innerHTML = '<div class="empty-state">未找到相关基金</div>';
+  } else {
+      container.appendChild(fragment);
+  }
+}
+
+function toggleSelectFund(fund, itemElement) {
+  if (selectedFunds.has(fund.CODE)) {
+    selectedFunds.delete(fund.CODE);
+    itemElement.classList.remove("selected");
+    itemElement.querySelector("svg").style.display = "none";
+  } else {
+    selectedFunds.set(fund.CODE, fund);
+    itemElement.classList.add("selected");
+    itemElement.querySelector("svg").style.display = "block";
+  }
+  updateSelectedCount();
+}
+
+function updateSelectedCount() {
+  const countSpan = document.getElementById("selected-count-num");
+  const confirmBtn = document.getElementById("confirm-add-btn");
+  
+  if (countSpan) countSpan.textContent = selectedFunds.size;
+  if (confirmBtn) confirmBtn.disabled = selectedFunds.size === 0;
+}
+
+function confirmAddFunds() {
+  if (selectedFunds.size === 0) return;
+  
+  const tbody = document.getElementById("fund-table-body");
+  const fragment = document.createDocumentFragment();
+  const existingRows = getFundRows();
+  let addedCount = 0;
+  let duplicateCount = 0;
+  
+  selectedFunds.forEach((fund, code) => {
+      // Check if already exists in table to avoid duplicates
+      let exists = false;
+      existingRows.forEach(r => {
+          const c = getFundCodeFromRow(r);
+          if (c === code) exists = true;
+      });
+      
+      if (!exists) {
+          const name = `${code}  ${fund.NAME}`;
+          const row = createTableRow({ name: name, zfbAmount: null, stockAmount: null });
+          fragment.appendChild(row);
+          addedCount++;
+      } else {
+          duplicateCount++;
+      }
+  });
+  
+  if (addedCount > 0) {
+      tbody.appendChild(fragment);
+      updateRowIndices();
+      handleStorageUpdate();
+      scheduleProfit(); // Will fetch estimates
+  }
+  
+  closeAddFundModal();
+  
+  // Show feedback
+  if (duplicateCount > 0) {
+      if (addedCount > 0) {
+          // window.alert(`成功添加 ${addedCount} 只基金，有 ${duplicateCount} 只已存在被忽略。`);
+          // Use less intrusive notification or just log
+          console.log(`Added ${addedCount}, Duplicates ignored: ${duplicateCount}`);
+      } else {
+          window.alert(`所选的 ${duplicateCount} 只基金均已存在，未进行添加。`);
+      }
+  } else if (addedCount > 0) {
+      setTimeout(() => {
+         window.scrollTo(0, document.body.scrollHeight);
+      }, 100);
+  }
+}
+
 async function initApp() {
   await initStorage();
   const dateElement = document.getElementById("current-date");
@@ -1476,12 +1649,31 @@ async function initApp() {
   
   updateCountdown();
   if (addFundButton) {
-    addFundButton.addEventListener("click", () => {
-      const tbody = document.getElementById("fund-table-body");
-      const row = createTableRow({ name: "", zfbAmount: null, stockAmount: null });
-      tbody.appendChild(row);
-      updateRowIndices();
+    addFundButton.addEventListener("click", openAddFundModal);
+  }
+
+  const closeModalBtn = document.getElementById("close-modal-btn");
+  const cancelAddBtn = document.getElementById("cancel-add-btn");
+  const confirmAddBtn = document.getElementById("confirm-add-btn");
+  const searchInput = document.getElementById("fund-search-input");
+  const modal = document.getElementById("add-fund-modal");
+
+  if (closeModalBtn) closeModalBtn.addEventListener("click", closeAddFundModal);
+  if (cancelAddBtn) cancelAddBtn.addEventListener("click", closeAddFundModal);
+  if (confirmAddBtn) confirmAddBtn.addEventListener("click", confirmAddFunds);
+  if (searchInput) {
+    searchInput.addEventListener("input", (e) => {
+        handleDebouncedSearch(e.target.value.trim());
     });
+  }
+  
+  // Close modal when clicking outside
+  if (modal) {
+      modal.addEventListener("click", (e) => {
+          if (e.target === modal) {
+              closeAddFundModal();
+          }
+      });
   }
 
   if (exportConfigButton) {

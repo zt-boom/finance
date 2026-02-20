@@ -98,6 +98,34 @@
 </section>
 </main>
 </div>
+<div id="add-fund-modal" class="modal">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>添加基金</h3>
+      <button id="close-modal-btn" class="icon-button">
+        <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M18 6L6 18M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="search-box">
+        <input type="text" id="fund-search-input" placeholder="输入基金代码或名称搜索（支持拼音）" autofocus>
+      </div>
+      <div class="search-results" id="search-results-list">
+        <!-- Search results will appear here -->
+        <div class="empty-state">请输入关键词搜索</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <div class="selected-count">已选: <span id="selected-count-num">0</span></div>
+      <div class="modal-actions">
+        <button id="cancel-add-btn" class="secondary-button">取消</button>
+        <button id="confirm-add-btn" class="primary-button" disabled>添加选中</button>
+      </div>
+    </div>
+  </div>
+</div>
 <input type="file" id="import-file-input" accept=".json" style="display: none;">
 <script type="module" src="./main.js"></script>
 </body>

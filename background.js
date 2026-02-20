@@ -172,9 +172,32 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
+// 5. 新增：搜索基金
+async function searchFund(keyword) {
+  if (!keyword) throw new Error("缺少搜索关键词");
+  const url = `https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx?m=1&key=${encodeURIComponent(keyword)}`;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error("搜索基金失败");
+    const data = await response.json();
+    if (data.ErrCode !== 0) throw new Error(data.ErrMsg || "搜索失败");
+    return data.Datas || [];
+  } catch (e) {
+    console.error(`Search error for ${keyword}:`, e);
+    throw e;
+  }
+}
+
 // 保持原有的消息监听，兼容前端手动调用
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !message.type) return;
+
+  if (message.type === "searchFund") {
+    searchFund(message.keyword)
+      .then(data => sendResponse({ ok: true, data }))
+      .catch(e => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
 
   if (message.type === "fetchFundJson") {
     fetchFundJsonByCode(message.code)
