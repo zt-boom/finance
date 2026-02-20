@@ -22,6 +22,47 @@ import {
   saveTrendPointToStorage
 } from './storage.js';
 
+// --- Profit Mode ---
+let isCumulativeProfitMode = false;
+
+function toggleProfitMode(event) {
+  if (event) {
+    event.stopPropagation(); // Prevent sorting
+  }
+  isCumulativeProfitMode = !isCumulativeProfitMode;
+  applyProfitMode();
+  // Save preference
+  localStorage.setItem("finance_profit_mode", isCumulativeProfitMode);
+  // Re-calculate to update display
+  calculateProfit();
+}
+
+function applyProfitMode() {
+  const btn = document.getElementById("toggle-profit-mode-btn");
+  const thLabel = document.querySelector('th[data-sort="profit"] .th-label');
+  
+  if (isCumulativeProfitMode) {
+    document.body.classList.add("cumulative-mode-active");
+    if (btn) btn.title = "切换回当日收益";
+    if (thLabel) thLabel.textContent = "持有收益(元)";
+  } else {
+    document.body.classList.remove("cumulative-mode-active");
+    if (btn) btn.title = "切换到持有收益";
+    if (thLabel) thLabel.textContent = baseProfitHeaderText;
+  }
+}
+
+function initProfitMode() {
+  const saved = localStorage.getItem("finance_profit_mode");
+  isCumulativeProfitMode = saved === "true";
+  applyProfitMode();
+  
+  const btn = document.getElementById("toggle-profit-mode-btn");
+  if (btn) {
+    btn.addEventListener("click", toggleProfitMode);
+  }
+}
+
 // --- Privacy Mode ---
 let isPrivacyMode = false;
 
@@ -76,7 +117,8 @@ import {
   fetchFundEstimate,
   fetchFundInfo,
   updateExtensionBadge,
-  searchFund
+  searchFund,
+  fetchMarketIndices
 } from './api.js';
 
 import { APP_CONFIG } from './config.js';
@@ -96,11 +138,14 @@ let totalPercentElement = null;
 let totalZfbProfitElement = null;
 let totalStockProfitElement = null;
 let totalProfitElement = null;
+let amountHeader = null;
 let percentHeader = null;
 let profitHeader = null;
+let amountSortOrder = null;
 let percentSortOrder = null;
 let profitSortOrder = null;
 
+const baseAmountHeaderText = "持仓金额(元)";
 const basePercentHeaderText = "预估涨跌(%)";
 const baseProfitHeaderText = "预估收益(元)";
 
@@ -192,6 +237,23 @@ function applyProfitColor(element, value) {
 }
 
 function updateSortHeaderUI() {
+  if (amountHeader) {
+    amountHeader.textContent = baseAmountHeaderText;
+    amountHeader.classList.remove("sort-asc", "sort-desc");
+    if (amountSortOrder) {
+      amountHeader.classList.add(amountSortOrder === "asc" ? "sort-asc" : "sort-desc");
+    }
+    const s = amountHeader.querySelector(".sort-state");
+    if (s) {
+      if (!amountSortOrder) {
+        s.textContent = "不排序";
+      } else if (amountSortOrder === "desc") {
+        s.textContent = "从高到低";
+      } else {
+        s.textContent = "从低到高";
+      }
+    }
+  }
   if (percentHeader) {
     percentHeader.textContent = basePercentHeaderText;
     percentHeader.classList.remove("sort-asc", "sort-desc");
@@ -349,6 +411,146 @@ function calculateProfit() {
         percent = percentCell ? parseFloat(percentCell.textContent) : NaN;
     }
     
+    // For cumulative profit, we need yesterday's NAV or cost.
+    // Simplified version: 
+    // Since we don't store cost price, we can only simulate "Cumulative" if we assume 
+    // the user inputs "Cost" instead of "Market Value" in the amount field?
+    // OR: We fetch NAV and Yesterday NAV.
+    // Current amount = Shares * Current NAV
+    // Cost amount = Shares * Cost Price (User Input needed?)
+    // 
+    // Given the current input is "Amount" (Market Value or Cost?), usually it's treated as Market Value for daily profit.
+    // Daily Profit = Market Value * Percent / (1 + Percent) ?? No, usually:
+    // If input is "Yesterday's Market Value", then Profit = Input * Percent.
+    // If input is "Current Market Value", then Profit = Input - Input / (1 + Percent).
+    //
+    // The current logic `zfbProfit = normalizedZfb * percent / 100` implies `normalizedZfb` is the BASE (Yesterday's value or Cost).
+    // Let's stick to this assumption: Input Amount is the Base Amount for today's calculation.
+    
+    // For Cumulative Profit:
+    // We need Total Profit = Current Market Value - Cost.
+    // But we don't have Cost.
+    // So we can only support this if we add a "Cost" field or "Total Profit" field.
+    // 
+    // Alternative: The user wants to toggle between "Daily Estimate" and "Total Holding Profit".
+    // "Total Holding Profit" usually comes from the broker app. 
+    // Without sync, we can't know it unless user inputs it.
+    //
+    // Let's use the "accumulated profit" if we can fetch it? No API for personal data.
+    // 
+    // Workaround: 
+    // Add a new input column for "Cost" or "Total Profit"?
+    // Or just fetch "GSZ" (Estimated NAV) and "DWJZ" (Yesterday NAV).
+    // If user inputs "Shares" (份额), we can calc everything.
+    // But user inputs "Amount" (金额).
+    //
+    // Let's try to fetch DWJZ (Yesterday NAV) and GSZ (Estimated NAV).
+    // If we assume Input Amount is "Cost" (users often input their principal),
+    // Then Total Profit = Cost * (CurrentNAV - CostNAV) / CostNAV. We don't know CostNAV.
+    //
+    // If we assume Input Amount is "Yesterday Market Value" (for daily profit):
+    // Daily Profit = Amount * Percent%.
+    //
+    // Okay, implementing "Cumulative Profit" properly requires "Cost" input.
+    // Let's add a hidden "Cost" field or reusing existing fields?
+    // No, that's too complex for now.
+    //
+    // Simplified "Cumulative Mode" for V1:
+    // Just toggle the display column to show "Accumulated Profit" IF we had it.
+    // Since we don't, maybe we can just calculate based on a mock "Cost" if user inputs it?
+    // 
+    // Let's add a "Cost" input mode?
+    // Or: Fetch "Accumulated NAV" (LJJZ)? No, that's fund performance, not user profit.
+    // 
+    // DECISION: To support "Cumulative Profit", we need user to input "Cost" or "Shares".
+    // Current inputs: Name, ZFB Amount, Stock Amount.
+    // Let's assume the user can input "Cost" in a new column?
+    // 
+    // Wait, the requirement says: "允许输入持仓成本... 或增加昨日净值列".
+    // Let's implement: Add a toggle to switch the inputs between "Yesterday Value" (default) and "Cost".
+    // Actually, "Holdings" usually means "Current Market Value" or "Principal".
+    // 
+    // Let's stick to the easiest high-value change:
+    // Add a "Cost" input in the modal? Or just let user input "Cost" in the main table?
+    // The table is crowded.
+    // 
+    // Let's try to fetch "Yesterday NAV" to make Daily Profit accurate.
+    // Daily Profit = Shares * (EstimateNAV - YesterdayNAV).
+    // Shares = Amount / YesterdayNAV (If Amount is Yesterday's Value).
+    // 
+    // Let's add a "Shares" mode?
+    // 
+    // RE-READ Requirement: "实现当日/累计收益切换：允许输入持仓成本...".
+    // Okay, I will add a hidden "Cost" state.
+    // When "Cumulative Mode" is ON:
+    // 1. The "Amount" column shows "Cost" (editable) or "Current Value"?
+    // 2. The "Profit" column shows "Total Profit".
+    //
+    // Let's try a simpler approach:
+    // Just allow user to toggle the "Profit" column to show "Total Profit".
+    // Total Profit = Current Value - Cost.
+    // We need Cost.
+    // 
+    // Let's add `cost` to storage.
+    // In the UI, maybe we can double click the Amount to toggle between "Market Value" and "Cost"?
+    // Or just add a small input for Cost?
+    //
+    // Actually, the easiest way to get "Total Profit" without extra inputs is impossible.
+    // 
+    // Let's assume the user inputs "Principal" (Cost) in the ZFB/Stock Amount fields when in "Cumulative Mode"?
+    // No, that's confusing.
+    //
+    // Let's add a `data-cost` attribute to the row, editable via a prompt or a new input?
+    //
+    // Proposed Solution:
+    // 1. In `Cumulative Mode`, the "Profit" column calculates: `CurrentAmount - Cost`.
+    // 2. We need `Cost`. 
+    // 3. Let's add `cost` field to the data model.
+    // 4. How to input `cost`? 
+    //    - Add a "Cost" column? (Table too wide)
+    //    - Use a Modal to edit details?
+    //    - Or: When in Cumulative Mode, the "ZFB/Stock Amount" inputs become "ZFB/Stock Cost"?
+    //      And we calculate Current Amount = Cost * (1 + TotalPercent)? No, we don't know TotalPercent.
+    //
+    // Let's go with: **"昨日净值" precise calculation** first, as it's easier and requested.
+    // And for Cumulative, maybe skip if too complex for this turn?
+    // The prompt said "实现1、2优化". 2 is "Day/Total Toggle".
+    //
+    // Let's implement **Precise Daily Profit** first.
+    // 1. Fetch `DWJZ` (Yesterday NAV) and `GSZ` (Estimate NAV).
+    // 2. We need `Shares` (份额).
+    //    - User inputs `Amount` (Market Value).
+    //    - `Shares` = `Amount` / `GSZ`? No.
+    //    - If `Amount` is `Yesterday Value`: `Shares` = `Amount` / `DWJZ`.
+    //    - If `Amount` is `Current Value`: `Shares` = `Amount` / `GSZ`.
+    //
+    // Let's assume `Amount` is **Yesterday's Market Value** (standard for pre-market).
+    // Then `Daily Profit` = `Amount` * `Percent`. This is what we have.
+    // It's accurate enough.
+    //
+    // So let's focus on **Cumulative Profit**.
+    // I will add a **"Cost"** field for each fund.
+    // Since UI space is limited, I'll add an "Edit Details" button or double-click?
+    // Or just add 2 columns "ZFB Cost", "Stock Cost" hidden by default?
+    //
+    // Let's try: **Toggle Input Mode**.
+    // Beside "持仓金额(元)" header, add a toggle.
+    // Mode A: Input "Yesterday Value" -> Show "Daily Profit".
+    // Mode B: Input "Cost" -> Show "Total Profit"? (Need Current Value).
+    //
+    // Better: 
+    // Keep "Yesterday Value" as primary input for daily tracking.
+    // Add a `cost` property in storage.
+    // When "Cumulative Mode" is active:
+    // 1. Show "Total Profit" in the Profit column.
+    // 2. "Total Profit" = (Current Value - Cost).
+    // 3. How to get Current Value? `Yesterday Value * (1 + Percent/100)`.
+    // 4. How to get Cost?
+    //    - Allow user to input Cost in the "Amount" fields WHEN in Cumulative Mode?
+    //    - Yes!
+    //    - When toggled to "Cumulative", the inputs show `Cost`. User can edit `Cost`.
+    //    - When toggled to "Daily", the inputs show `Yesterday Value`.
+    
     const isReal = percentCell && percentCell.dataset && percentCell.dataset.real === "true";
 
     totalZfbAmount += normalizedZfb;
@@ -364,8 +566,22 @@ function calculateProfit() {
 
     if (amount > 0 && !Number.isNaN(percent)) {
       try {
-        zfbProfit = normalizedZfb * percent / 100;
-        stockProfit = normalizedStock * percent / 100;
+        if (isCumulativeProfitMode) {
+             const zfbVal = row.dataset.zfbAmount ? parseFloat(row.dataset.zfbAmount) : 0;
+             const stockVal = row.dataset.stockAmount ? parseFloat(row.dataset.stockAmount) : 0;
+             
+             const currentZfbValue = zfbVal * (1 + percent / 100);
+             const currentStockValue = stockVal * (1 + percent / 100);
+             
+             zfbProfit = currentZfbValue - normalizedZfb; // normalizedZfb is Cost here
+             stockProfit = currentStockValue - normalizedStock; // normalizedStock is Cost here
+        } else {
+             // Daily Mode (Default)
+             // Inputs are Yesterday Value.
+             zfbProfit = normalizedZfb * percent / 100;
+             stockProfit = normalizedStock * percent / 100;
+        }
+        
         rowProfit = zfbProfit + stockProfit;
         validCalc = true;
   
@@ -462,6 +678,79 @@ function calculateProfit() {
   const history = loadTrendHistoryFromStorage();
   if (history && history.data) {
       drawTrendChart("trend-chart-container", history.data);
+  }
+}
+
+// --- Theme Mode ---
+function initThemeMode() {
+  const savedTheme = localStorage.getItem("finance_theme");
+  const btn = document.getElementById("theme-toggle-btn");
+  
+  // Set initial class
+  if (savedTheme === "dark") {
+    document.body.classList.add("dark-mode");
+  } else if (savedTheme === "light") {
+    document.body.classList.remove("dark-mode");
+  } else {
+    // Follow system preference
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+      document.body.classList.add("dark-mode");
+    }
+  }
+  
+  updateThemeIcon();
+  
+  if (btn) {
+    btn.addEventListener("click", toggleThemeMode);
+  }
+  
+  // Listen for system changes
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
+      if (!localStorage.getItem("finance_theme")) {
+          if (e.matches) {
+              document.body.classList.add("dark-mode");
+          } else {
+              document.body.classList.remove("dark-mode");
+          }
+          updateThemeIcon();
+      }
+  });
+}
+
+function toggleThemeMode() {
+  const isDark = document.body.classList.contains("dark-mode");
+  if (isDark) {
+    document.body.classList.remove("dark-mode");
+    localStorage.setItem("finance_theme", "light");
+  } else {
+    document.body.classList.add("dark-mode");
+    localStorage.setItem("finance_theme", "dark");
+  }
+  updateThemeIcon();
+  
+  // Re-draw chart with new theme colors
+  const history = loadTrendHistoryFromStorage();
+  if (history && history.data) {
+    drawTrendChart("trend-chart-container", history.data);
+  }
+}
+
+function updateThemeIcon() {
+  const btn = document.getElementById("theme-toggle-btn");
+  if (!btn) return;
+  
+  const isDark = document.body.classList.contains("dark-mode");
+  const sunIcon = btn.querySelector(".theme-sun");
+  const moonIcon = btn.querySelector(".theme-moon");
+  
+  if (isDark) {
+    if (sunIcon) sunIcon.style.display = "none";
+    if (moonIcon) moonIcon.style.display = "block";
+    btn.title = "切换到亮色模式";
+  } else {
+    if (sunIcon) sunIcon.style.display = "block";
+    if (moonIcon) moonIcon.style.display = "none";
+    btn.title = "切换到暗黑模式";
   }
 }
 
@@ -800,25 +1089,30 @@ function createTableRow(fund) {
 }
 
 function readHoldingsFromTable() {
-  const rows = getFundRows();
+  const rows = document.querySelectorAll('#fund-table-body tr[data-role="fund-row"]');
   const holdings = [];
   rows.forEach(row => {
     const inputs = getFundRowInputs(row);
     const nameInput = inputs.nameInput;
-    const zfbInput = inputs.zfbInput;
-    const stockInput = inputs.stockInput;
+    
     const name = nameInput ? nameInput.value.trim() : "";
-    const zfbAmount = zfbInput ? parseFloat(zfbInput.value) : NaN;
-    const stockAmount = stockInput ? parseFloat(stockInput.value) : NaN;
-    const hasZfb = !Number.isNaN(zfbAmount) && zfbAmount > 0;
-    const hasStock = !Number.isNaN(stockAmount) && stockAmount > 0;
-    if (!name && !hasZfb && !hasStock) {
+    
+    // Read from dataset
+    const zfbAmount = row.dataset.zfbAmount ? parseFloat(row.dataset.zfbAmount) : 0;
+    const stockAmount = row.dataset.stockAmount ? parseFloat(row.dataset.stockAmount) : 0;
+    const zfbCost = row.dataset.zfbCost ? parseFloat(row.dataset.zfbCost) : zfbAmount;
+    const stockCost = row.dataset.stockCost ? parseFloat(row.dataset.stockCost) : stockAmount;
+    
+    if (!name && zfbAmount === 0 && stockAmount === 0) {
       return;
     }
+    
     holdings.push({
       name,
-      zfbAmount: hasZfb ? zfbAmount : 0,
-      stockAmount: hasStock ? stockAmount : 0
+      zfbAmount,
+      stockAmount,
+      zfbCost,
+      stockCost
     });
   });
   return holdings;
@@ -830,6 +1124,12 @@ function handleStorageUpdate() {
 }
 
 // --- Sorting ---
+
+function getRowAmount(row) {
+  const amountSpan = row.querySelector('span[data-role="amount-display"]');
+  const v = amountSpan ? parseFloat(amountSpan.textContent.replace(/,/g, "")) : NaN;
+  return v;
+}
 
 function getRowPercent(row) {
   const percentCell = row.querySelector('td[data-role="percent-cell"] span');
@@ -859,9 +1159,12 @@ function sortTableBy(type, order) {
     if (type === "percent") {
       av = getRowPercent(a);
       bv = getRowPercent(b);
-    } else {
+    } else if (type === "profit") {
       av = getRowProfit(a);
       bv = getRowProfit(b);
+    } else if (type === "amount") {
+      av = getRowAmount(a);
+      bv = getRowAmount(b);
     }
     const aNa = Number.isNaN(av);
     const bNa = Number.isNaN(bv);
@@ -1037,6 +1340,8 @@ function autoFetchPercentages(options) {
       sortTableBy("percent", percentSortOrder);
     } else if (profitSortOrder) {
       sortTableBy("profit", profitSortOrder);
+    } else if (amountSortOrder) {
+      sortTableBy("amount", amountSortOrder);
     }
   });
 }
@@ -1177,6 +1482,8 @@ function fetchRealPercentagesForAllFunds() {
       sortTableBy("percent", percentSortOrder);
     } else if (profitSortOrder) {
       sortTableBy("profit", profitSortOrder);
+    } else if (amountSortOrder) {
+      sortTableBy("amount", amountSortOrder);
     }
     
     return { anySuccess: successCount > 0, allDone };
@@ -1531,6 +1838,7 @@ async function initApp() {
 
   document.addEventListener("keydown", handleKeyboardShortcuts);
 
+  amountHeader = document.querySelector('th[data-sort="amount"]');
   percentHeader = document.querySelector('th[data-sort="percent"]');
   profitHeader = document.querySelector('th[data-sort="profit"]');
   updateSortHeaderUI();
@@ -1546,6 +1854,10 @@ async function initApp() {
       profitSortOrder = sortStatus.order;
       updateSortHeaderUI();
       sortTableBy("profit", profitSortOrder);
+    } else if (sortStatus.type === "amount") {
+      amountSortOrder = sortStatus.order;
+      updateSortHeaderUI();
+      sortTableBy("amount", amountSortOrder);
     }
   }
 
@@ -1563,12 +1875,37 @@ async function initApp() {
   if (tbody) {
     tbody.addEventListener("click", handleTableClick);
   }
+  if (amountHeader) {
+    amountHeader.addEventListener("click", () => {
+      if (!amountSortOrder) {
+        originalOrderSnapshot = getCurrentRows();
+        amountSortOrder = "desc";
+        percentSortOrder = null;
+        profitSortOrder = null;
+        saveSortStatusToStorage({ type: "amount", order: "desc" });
+        updateSortHeaderUI();
+        sortTableBy("amount", "desc");
+      } else if (amountSortOrder === "desc") {
+        amountSortOrder = "asc";
+        saveSortStatusToStorage({ type: "amount", order: "asc" });
+        updateSortHeaderUI();
+        sortTableBy("amount", "asc");
+      } else {
+        amountSortOrder = null;
+        saveSortStatusToStorage(null);
+        updateSortHeaderUI();
+        restoreOriginalOrder();
+        originalOrderSnapshot = null;
+      }
+    });
+  }
   if (percentHeader) {
     percentHeader.addEventListener("click", () => {
       if (!percentSortOrder) {
         originalOrderSnapshot = getCurrentRows();
         percentSortOrder = "desc";
         profitSortOrder = null;
+        amountSortOrder = null;
         saveSortStatusToStorage({ type: "percent", order: "desc" });
         updateSortHeaderUI();
         sortTableBy("percent", "desc");
@@ -1592,6 +1929,7 @@ async function initApp() {
         originalOrderSnapshot = getCurrentRows();
         profitSortOrder = "desc";
         percentSortOrder = null;
+        amountSortOrder = null;
         saveSortStatusToStorage({ type: "profit", order: "desc" });
         updateSortHeaderUI();
         sortTableBy("profit", "desc");
@@ -1717,6 +2055,9 @@ async function initApp() {
   }
 
   if (dateElement) {
+    // Initial fetch for market indices
+    updateMarketIndices();
+    
     setInterval(() => {
       dateElement.textContent = getTodayDateString();
       
@@ -1739,6 +2080,7 @@ async function initApp() {
         if (remainingSeconds <= 0) {
           if (status === APP_STATE.ESTIMATE) {
             autoFetchPercentages({ useButton: false, showAlert: false });
+            updateMarketIndices(); // Also update indices
           } else if (status === APP_STATE.REAL) {
             triggerRealUpdateIfNeeded();
           }
@@ -1751,12 +2093,57 @@ async function initApp() {
   }
 }
 
+// --- Market Indices ---
+function updateMarketIndices() {
+  const container = document.getElementById("market-indices");
+  if (!container) return;
+  
+  if (!isChromeExtensionEnv()) {
+      container.innerHTML = `<span class="index-item loading">需在插件环境中运行</span>`;
+      return;
+  }
+  
+  fetchMarketIndices().then(indices => {
+      if (!indices || indices.length === 0) return;
+      
+      container.innerHTML = "";
+      indices.forEach(idx => {
+          const item = document.createElement("div");
+          item.className = "index-item";
+          
+          const change = parseFloat(idx.change);
+          const percent = parseFloat(idx.percent);
+          const price = parseFloat(idx.price);
+          
+          let colorClass = "value-zero";
+          if (change > 0) colorClass = "value-positive";
+          else if (change < 0) colorClass = "value-negative";
+          
+          // Format: Name Price (Percent%)
+          item.innerHTML = `
+            <span class="index-name">${idx.name}</span>
+            <span class="index-value ${colorClass}">${formatNumber(price, 2)}</span>
+            <span class="index-change ${colorClass}">${change > 0 ? '+' : ''}${formatNumber(percent, 2)}%</span>
+          `;
+          container.appendChild(item);
+      });
+  }).catch(err => {
+      console.error("Failed to update indices", err);
+      // Keep old data or show error if empty
+      if (container.children.length === 0 || container.querySelector(".loading")) {
+          container.innerHTML = `<span class="index-item loading">加载失败</span>`;
+      }
+  });
+}
+
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", () => {
-        initApp();
+        initThemeMode();
         initPrivacyMode();
+        initApp();
     });
   } else {
-    initApp();
+    initThemeMode();
     initPrivacyMode();
+    initApp();
   }

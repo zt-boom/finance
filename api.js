@@ -318,6 +318,42 @@ export function searchFund(keyword) {
   });
 }
 
+export function fetchMarketIndices() {
+  return new Promise((resolve, reject) => {
+    if (!isChromeExtensionEnv()) {
+      reject(new Error("当前环境不是 Chrome 插件"));
+      return;
+    }
+    
+    // 添加超时保护
+    const timer = setTimeout(() => {
+        reject(new Error("请求超时"));
+    }, APP_CONFIG.REQUEST_TIMEOUT);
+
+    try {
+      chrome.runtime.sendMessage(
+        { type: "fetchMarketIndices" },
+        response => {
+          clearTimeout(timer);
+          if (chrome.runtime.lastError) {
+            reject(new Error("获取大盘指数失败"));
+            return;
+          }
+          if (!response || !response.ok || !response.data) {
+            const message = response && response.error ? response.error : "获取大盘指数失败";
+            reject(new Error(message));
+            return;
+          }
+          resolve(response.data);
+        }
+      );
+    } catch (e) {
+      clearTimeout(timer);
+      reject(new Error("获取大盘指数失败"));
+    }
+  });
+}
+
 export function updateExtensionBadge(value) {
   if (!isChromeExtensionEnv()) {
     return;

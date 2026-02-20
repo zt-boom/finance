@@ -9,28 +9,45 @@
 <body>
 <div class="app">
 <header class="app-header">
-<h1>基金每日预估收益 v1.0</h1>
-<div class="date-row">
-<span>时间</span>
-<span id="current-date"></span>
-<span id="trading-status" class="trading-status"></span>
+<div class="title-row">
+  <h1>基金每日预估收益 v1.0</h1>
+  <button id="theme-toggle-btn" class="icon-button" title="切换主题">
+    <svg class="btn-icon theme-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:block">
+      <circle cx="12" cy="12" r="5"></circle>
+      <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"></path>
+    </svg>
+    <svg class="btn-icon theme-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+    </svg>
+  </button>
+</div>
+<div class="header-info-row">
+  <div class="market-indices" id="market-indices">
+    <!-- Indices will be injected here -->
+    <span class="index-item loading">加载中...</span>
+  </div>
+  <a href="https://52etf.site/" target="_blank" class="text-link-btn" title="访问 52etf.site" style="font-size: 13px; margin-left: 8px;">大盘概况</a>
+  <div class="date-row">
+    <span id="current-date"></span>
+    <span id="trading-status" class="trading-status"></span>
+  </div>
 </div>
 </header>
 <main class="app-main">
 <section class="card">
 <div class="card-header">
 <div class="header-title-group">
-  <h2>持仓明细</h2>
-  <a href="https://52etf.site/" target="_blank" class="text-link-btn" title="访问 52etf.site">大盘概况</a>
-</div>
-<div class="card-header-actions">
-<button id="add-fund-btn" class="primary-button">
-  <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-    <path d="M12 5v14M5 12h14"/>
-  </svg>
-  <span>添加</span>
-</button>
-  <button id="import-btn" class="secondary-button" title="导入配置">
+            <h2>持仓明细</h2>
+          </div>
+          <div class="card-header-actions">
+            <button id="add-fund-btn" class="primary-button">
+              <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 5v14M5 12h14"/>
+              </svg>
+              <span>添加</span>
+            </button>
+            <div class="header-actions-divider"></div>
+            <button id="import-btn" class="secondary-button" title="导入配置">
     <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
     </svg>
@@ -53,20 +70,33 @@
 </div>
 </div>
 <div class="card-body">
-<div id="trend-chart-container" style="width: 100%; height: 150px; margin-bottom: 15px; background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);"></div>
+<div id="trend-chart-container" class="chart-container"></div>
 <div class="table-wrapper">
 <table class="fund-table">
 <thead>
 <tr>
 <th class="index-col">序号</th>
 <th>名称</th>
-<th>ZFB持仓(元)</th>
-<th>证券持仓(元)</th>
-<th>持仓金额(元)</th>
-<th>ZFB收益(元)</th>
+            <th>ZFB持仓(元)</th>
+            <th>证券持仓(元)</th>
+            <th class="sortable" data-sort="amount"><span class="th-label">持仓金额(元)</span><span class="sort-state"></span></th>
+            <th>ZFB收益(元)</th>
 <th>证券收益(元)</th>
 <th class="sortable" data-sort="percent"><span class="th-label">预估涨跌(%)</span><span class="sort-state"></span></th>
-<th class="sortable" data-sort="profit"><span class="th-label">预估收益(元)</span><span class="sort-state"></span></th>
+            <th class="sortable" data-sort="profit">
+              <div class="th-content-wrapper">
+                <span class="th-label">预估收益(元)</span>
+                <span class="sort-state"></span>
+                <button id="toggle-profit-mode-btn" class="icon-button-small" title="切换当日/累计收益">
+                  <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M4 22h14a2 2 0 0 0 2-2V7.5L14.5 2H6a2 2 0 0 0-2 2v4"/>
+                    <path d="M14 2v6h6"/>
+                    <path d="M3 15h6"/>
+                    <path d="M6 12v6"/>
+                  </svg>
+                </button>
+              </div>
+            </th>
 <th>操作</th>
 </tr>
 </thead>

@@ -5,12 +5,20 @@ export function drawTrendChart(containerId, data) {
   // Clear previous content
   container.innerHTML = "";
   
+  const styles = getComputedStyle(document.body);
+  const textColor = styles.getPropertyValue('--text-tertiary').trim() || '#6b7280';
+  const gridColor = styles.getPropertyValue('--border-color').trim() || '#e5e7eb';
+  const zeroLineColor = styles.getPropertyValue('--input-border').trim() || '#d1d5db';
+  const lineColor = styles.getPropertyValue('--btn-primary-bg').trim() || '#3b82f6';
+  const profitPos = styles.getPropertyValue('--profit-pos').trim() || '#ef4444';
+  const profitNeg = styles.getPropertyValue('--profit-neg').trim() || '#10b981';
+  
   if (!data || data.length === 0) {
       container.textContent = "暂无今日走势数据";
       container.style.display = "flex";
       container.style.alignItems = "center";
       container.style.justifyContent = "center";
-      container.style.color = "#9ca3af";
+      container.style.color = textColor;
       return;
   }
   
@@ -44,8 +52,6 @@ export function drawTrendChart(containerId, data) {
   minProfit -= buffer;
   maxProfit += buffer;
   
-  // Ensure 0 is included if possible/sensible, but let's stick to auto-scale for now
-  
   const chartWidth = width - padding.left - padding.right;
   const chartHeight = height - padding.top - padding.bottom;
   
@@ -55,7 +61,7 @@ export function drawTrendChart(containerId, data) {
   
   // Draw Grid & Axes
   ctx.beginPath();
-  ctx.strokeStyle = "#e5e7eb";
+  ctx.strokeStyle = gridColor;
   ctx.lineWidth = 1;
   
   // Zero line
@@ -63,13 +69,13 @@ export function drawTrendChart(containerId, data) {
   if (zeroY >= padding.top && zeroY <= height - padding.bottom) {
       ctx.moveTo(padding.left, zeroY);
       ctx.lineTo(width - padding.right, zeroY);
-      ctx.strokeStyle = "#d1d5db"; // Darker for zero line
+      ctx.strokeStyle = zeroLineColor;
       ctx.stroke();
   }
   
   // Draw Trend Line
   ctx.beginPath();
-  ctx.strokeStyle = "#3b82f6"; // Blue
+  ctx.strokeStyle = lineColor;
   ctx.lineWidth = 2;
   
   data.forEach((p, i) => {
@@ -83,7 +89,13 @@ export function drawTrendChart(containerId, data) {
   
   // Fill Area
   ctx.beginPath();
-  ctx.fillStyle = "rgba(59, 130, 246, 0.1)"; // Blue with opacity
+  // We need to parse color for rgba.
+  // Simple hack: use hardcoded opacity based on hex or just use opacity on canvas globalAlpha?
+  // Let's use globalAlpha.
+  ctx.save();
+  ctx.globalAlpha = 0.1;
+  ctx.fillStyle = lineColor;
+  
   const firstX = getX(0);
   const firstY = getY(data[0].profit);
   ctx.moveTo(firstX, firstY);
@@ -101,9 +113,10 @@ export function drawTrendChart(containerId, data) {
   ctx.lineTo(lastX, baseY);
   ctx.lineTo(firstX, baseY);
   ctx.fill();
+  ctx.restore();
   
   // Draw Labels (Min/Max/Current)
-  ctx.fillStyle = "#6b7280";
+  ctx.fillStyle = textColor;
   ctx.font = "10px sans-serif";
   ctx.textAlign = "right";
   ctx.textBaseline = "middle";
@@ -118,13 +131,13 @@ export function drawTrendChart(containerId, data) {
   // Last point value
   const lastP = data[data.length - 1];
   const lastY = getY(lastP.profit);
-  ctx.fillStyle = lastP.profit >= 0 ? "#ef4444" : "#10b981";
+  ctx.fillStyle = lastP.profit >= 0 ? profitPos : profitNeg;
   ctx.font = "bold 12px sans-serif";
   ctx.fillText(lastP.profit.toFixed(2), width - 5, lastY - 10);
   
   // Draw dot at last point
   ctx.beginPath();
-  ctx.fillStyle = lastP.profit >= 0 ? "#ef4444" : "#10b981";
+  ctx.fillStyle = lastP.profit >= 0 ? profitPos : profitNeg;
   ctx.arc(lastX, lastY, 4, 0, Math.PI * 2);
   ctx.fill();
 }

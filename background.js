@@ -188,12 +188,49 @@ async function searchFund(keyword) {
   }
 }
 
+// 6. 新增：获取大盘指数
+async function fetchMarketIndices() {
+  // 上证指数 1.000001
+  // 深证成指 0.399001
+  // 创业板指 0.399006
+  const codes = ["1.000001", "0.399001", "0.399006"];
+  const url = `https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&fields=f2,f3,f4,f12,f14&secids=${codes.join(",")}&_=${Date.now()}`;
+  
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error("获取大盘数据失败");
+    const json = await response.json();
+    if (!json || !json.data || !json.data.diff) throw new Error("大盘数据格式错误");
+    
+    // Map to friendly format
+    // f2: current price, f3: percent change, f4: amount change, f12: code, f14: name
+    const indices = json.data.diff.map(item => ({
+      name: item.f14,
+      code: item.f12,
+      price: item.f2,
+      percent: item.f3,
+      change: item.f4
+    }));
+    return indices;
+  } catch (e) {
+    console.error("Fetch indices error:", e);
+    throw e;
+  }
+}
+
 // 保持原有的消息监听，兼容前端手动调用
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !message.type) return;
 
   if (message.type === "searchFund") {
     searchFund(message.keyword)
+      .then(data => sendResponse({ ok: true, data }))
+      .catch(e => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
+
+  if (message.type === "fetchMarketIndices") {
+    fetchMarketIndices()
       .then(data => sendResponse({ ok: true, data }))
       .catch(e => sendResponse({ ok: false, error: e.message }));
     return true;
