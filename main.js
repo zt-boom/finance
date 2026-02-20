@@ -22,6 +22,53 @@ import {
   saveTrendPointToStorage
 } from './storage.js';
 
+// --- Privacy Mode ---
+let isPrivacyMode = false;
+
+function togglePrivacyMode() {
+  isPrivacyMode = !isPrivacyMode;
+  applyPrivacyMode();
+  // Save preference
+  localStorage.setItem("finance_privacy_mode", isPrivacyMode);
+}
+
+function applyPrivacyMode() {
+  const body = document.body;
+  const btn = document.getElementById("toggle-privacy-btn");
+  
+  if (isPrivacyMode) {
+    body.classList.add("privacy-active");
+    if (btn) {
+       const eyeOpen = btn.querySelectorAll(".eye-open");
+       const eyeClosed = btn.querySelectorAll(".eye-closed");
+       eyeOpen.forEach(el => el.style.display = "none");
+       eyeClosed.forEach(el => el.style.display = "block");
+       btn.title = "显示金额";
+    }
+  } else {
+    body.classList.remove("privacy-active");
+    if (btn) {
+       const eyeOpen = btn.querySelectorAll(".eye-open");
+       const eyeClosed = btn.querySelectorAll(".eye-closed");
+       eyeOpen.forEach(el => el.style.display = "block");
+       eyeClosed.forEach(el => el.style.display = "none");
+       btn.title = "隐藏金额";
+    }
+  }
+}
+
+function initPrivacyMode() {
+  const saved = localStorage.getItem("finance_privacy_mode");
+  isPrivacyMode = saved === "true";
+  applyPrivacyMode();
+  
+  const btn = document.getElementById("toggle-privacy-btn");
+  if (btn) {
+    btn.addEventListener("click", togglePrivacyMode);
+  }
+}
+
+
 import { drawTrendChart } from './chart.js';
 
 import {
@@ -416,6 +463,68 @@ function calculateProfit() {
 
 function handleNameInput(event) {
   const input = event.currentTarget;
+  const rawValue = input.value;
+  
+  // Check for batch input (paste)
+  // Pattern: multiple 6-digit codes separated by spaces, commas, or newlines
+  // e.g., "110022 000001" or "110022,000001"
+  // But we need to be careful not to trigger this when user is just typing a single code and presses space
+  // So we check if there are at least two 6-digit codes
+  const potentialCodes = rawValue.match(/\d{6}/g);
+  
+  if (potentialCodes && potentialCodes.length > 1) {
+      // It's a batch paste
+      // 1. Update current row with the first code
+      input.value = potentialCodes[0];
+      // Trigger fetch for current row
+      handleDebouncedNameInput(input);
+      
+      const tbody = document.getElementById("fund-table-body");
+      const fragment = document.createDocumentFragment();
+      const currentRow = input.closest('tr[data-role="fund-row"]');
+      
+      // 2. Add new rows for the rest
+      for (let i = 1; i < potentialCodes.length; i++) {
+          const code = potentialCodes[i];
+          const newRow = createTableRow({ name: code, zfbAmount: null, stockAmount: null });
+          fragment.appendChild(newRow);
+          
+          // We need to trigger fetch for these new rows too
+          // But since they are not in DOM yet, we can't easily use handleDebouncedNameInput on them 
+          // (unless we append first, which we will do)
+      }
+      
+      if (currentRow) {
+          if (currentRow.nextSibling) {
+              tbody.insertBefore(fragment, currentRow.nextSibling);
+          } else {
+              tbody.appendChild(fragment);
+          }
+      } else {
+           tbody.appendChild(fragment);
+      }
+      
+      updateRowIndices();
+      
+      // Trigger fetch for new rows
+      // We need to find the rows we just added. 
+      // A simple way is to iterate from the next sibling of currentRow
+      let nextRow = currentRow.nextSibling;
+      let count = 1;
+      while(nextRow && count < potentialCodes.length) {
+          const inputs = getFundRowInputs(nextRow);
+          if (inputs.nameInput) {
+               // Force fetch immediately for new rows
+               tryFetchFundByInput(inputs.nameInput, { showAlertOnMissing: false });
+          }
+          nextRow = nextRow.nextSibling;
+          count++;
+      }
+      
+      handleStorageUpdate();
+      return;
+  }
+
   handleStorageUpdate();
   handleDebouncedNameInput(input);
 }
@@ -1268,7 +1377,13 @@ async function initApp() {
   }
 
   if (summaryRow) {
-    summaryRow.addEventListener("click", copySummaryReport);
+    summaryRow.addEventListener("click", (event) => {
+      // If click target is inside the toggle-privacy-btn, do not copy report
+      if (event.target.closest("#toggle-privacy-btn")) {
+        return;
+      }
+      copySummaryReport();
+    });
     summaryRow.title = "点击复制今日战报";
   }
 
@@ -1444,8 +1559,12 @@ async function initApp() {
   }
 }
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", initApp);
-} else {
-  initApp();
-}
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => {
+        initApp();
+        initPrivacyMode();
+    });
+  } else {
+    initApp();
+    initPrivacyMode();
+  }

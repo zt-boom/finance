@@ -518,7 +518,85 @@ gap: 4px;
   background-color: transparent;
 }
 
-.text-link-btn:hover {
-  color: #3b82f6;
-  background-color: #eff6ff;
+.total-amount-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.icon-button-small {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  color: #6b7280;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.icon-button-small:hover {
+  background-color: #e5e7eb;
+  color: #374151;
+}
+
+.icon-button-small svg {
+  width: 16px;
+  height: 16px;
+}
+
+.blur-text {
+  filter: blur(4px);
+  user-select: none;
+  transition: filter 0.3s ease;
+}
+
+.privacy-mode .amount-value {
+  display: none;
+}
+
+.privacy-mode .amount-mask {
+  display: inline;
+}
+
+/* Ensure inputs are also hidden in privacy mode */
+body.privacy-active input[type="number"],
+body.privacy-active .narrow-number-input {
+  color: transparent;
+  text-shadow: 0 0 5px rgba(0,0,0,0.5);
+}
+
+body.privacy-active #total-zfb-amount,
+body.privacy-active #total-stock-amount,
+body.privacy-active #total-amount,
+body.privacy-active #total-zfb-profit,
+body.privacy-active #total-stock-profit,
+body.privacy-active #total-profit,
+body.privacy-active span[data-role="amount-display"],
+body.privacy-active td[data-role="zfb-profit-cell"] span,
+body.privacy-active td[data-role="stock-profit-cell"] span,
+body.privacy-active td[data-role="profit-cell"] span {
+  visibility: hidden;
+  position: relative;
+}
+
+body.privacy-active #total-zfb-amount::after,
+body.privacy-active #total-stock-amount::after,
+body.privacy-active #total-amount::after,
+body.privacy-active #total-zfb-profit::after,
+body.privacy-active #total-stock-profit::after,
+body.privacy-active #total-profit::after,
+body.privacy-active span[data-role="amount-display"]::after,
+body.privacy-active td[data-role="zfb-profit-cell"] span::after,
+body.privacy-active td[data-role="stock-profit-cell"] span::after,
+body.privacy-active td[data-role="profit-cell"] span::after {
+  content: "****";
+  visibility: visible;
+  position: absolute;
+  right: 0;
+  top: 0;
+  color: #6b7280; /* Neutral color for hidden values */
 }
