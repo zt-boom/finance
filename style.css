@@ -611,6 +611,149 @@ body {
     gap: 8px;
     align-items: flex-start;
   }
+  
+  /* Mobile Table Card View */
+  .fund-table {
+    display: block;
+    width: 100%;
+  }
+
+  .fund-table thead {
+    display: none; /* Hide header */
+  }
+
+  .fund-table tbody {
+    display: block;
+    width: 100%;
+  }
+
+  .fund-table tr {
+    display: block;
+    background-color: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    margin-bottom: 12px;
+    padding: 12px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+  }
+
+  .fund-table td {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--border-color);
+    padding: 8px 0;
+    text-align: right;
+    width: 100% !important; /* Override fixed widths */
+  }
+
+  .fund-table td:last-child {
+    border-bottom: none;
+  }
+
+  /* Add Labels via pseudo-element */
+  .fund-table td::before {
+    content: attr(data-label);
+    font-weight: 500;
+    color: var(--text-secondary);
+    text-align: left;
+    margin-right: 12px;
+    min-width: 80px;
+  }
+  
+  /* Specific Cell Tweaks */
+  
+  /* Index: Hide or simplify */
+  .fund-table td[data-role="row-index"] {
+    display: none;
+  }
+
+  /* Name: Bold and prominent */
+  .fund-table td:nth-child(2) {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    border-bottom: 2px solid var(--border-color);
+    padding-bottom: 12px;
+  }
+  
+  .fund-table td:nth-child(2)::before {
+    display: none; /* Hide label for name to save space */
+  }
+
+  .fund-table td:nth-child(2) input {
+    text-align: left;
+    font-size: 16px;
+    font-weight: 600;
+    border: none;
+    background: transparent;
+    padding: 0;
+    width: 100%;
+  }
+
+  /* Hide less important columns if needed, but Card view allows all */
+  
+  /* Actions: Align right */
+  .fund-table td:last-child {
+    justify-content: flex-end;
+    gap: 12px;
+  }
+  
+  .fund-table td:last-child::before {
+    display: none;
+  }
+  
+  /* Summary Row Mobile */
+  .summary-row {
+    display: block; /* Change from flex column to block to behave like other rows */
+    background-color: var(--card-bg) !important;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    margin-top: 12px;
+    padding: 12px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+  }
+
+  .summary-row td {
+    display: flex;
+    justify-content: space-between;
+    width: 100%;
+    align-items: center; 
+    border-bottom: 1px solid var(--border-color);
+    padding: 8px 0;
+    text-align: right;
+    background: transparent;
+    box-shadow: none;
+    margin-bottom: 0;
+    border-radius: 0;
+    border-top: none;
+    border-left: none;
+    border-right: none;
+  }
+  
+  .summary-row td:last-child {
+    border-bottom: none;
+    justify-content: center;
+    padding-top: 12px;
+  }
+
+  .summary-row td:first-child {
+    display: none; /* Hide "合计" text cell */
+  }
+  
+  /* Make sure spans inside summary row also have labels */
+  .summary-row td span[data-label]::before {
+    content: attr(data-label);
+    font-weight: 500;
+    color: var(--text-secondary);
+    text-align: left;
+    margin-right: 12px;
+  }
+  
+  /* Hide empty cells in summary row mobile view */
+  .summary-row td:empty {
+    display: none;
+  }
 }
 
 @keyframes highlight-fade {

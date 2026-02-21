@@ -1007,6 +1007,19 @@ function createTableRow(fund) {
   const percentTd = document.createElement("td");
   const profitTd = document.createElement("td");
   const actionsTd = document.createElement("td");
+  
+  // Set data-label for responsive view
+  indexTd.setAttribute("data-label", "序号");
+  nameTd.setAttribute("data-label", "基金名称");
+  zfbAmountTd.setAttribute("data-label", "ZFB持仓");
+  stockAmountTd.setAttribute("data-label", "证券持仓");
+  amountTd.setAttribute("data-label", "持仓金额");
+  zfbProfitTd.setAttribute("data-label", "ZFB收益");
+  stockProfitTd.setAttribute("data-label", "证券收益");
+  percentTd.setAttribute("data-label", "预估涨跌");
+  profitTd.setAttribute("data-label", "预估收益");
+  actionsTd.setAttribute("data-label", "操作");
+
   const nameInput = document.createElement("input");
   nameInput.type = "text";
   nameInput.value = fund.name || "";

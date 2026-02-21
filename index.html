@@ -102,25 +102,33 @@
 </thead>
 <tbody id="fund-table-body"></tbody>
         <tfoot>
-          <tr class="summary-row">
-            <td colspan="2">合计：</td>
-            <td><span id="total-zfb-amount">0.00</span></td>
-            <td><span id="total-stock-amount">0.00</span></td>
-            <td><span id="total-amount">0.00</span></td>
-            <td><span id="total-zfb-profit">0.00</span></td>
-            <td><span id="total-stock-profit">0.00</span></td>
-            <td><span id="total-percent">0.00%</span></td>
-            <td><span id="total-profit">0.00</span></td>
+          <tr class="summary-row" title="点击复制今日战报">
+            <td colspan="4">合计</td>
             <td>
-              <button id="toggle-privacy-btn" class="icon-button-small" title="显示/隐藏金额" style="margin: 0 auto;">
-                <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path class="eye-open" d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-                  <circle class="eye-open" cx="12" cy="12" r="3"></circle>
-                  <path class="eye-closed" d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24M1 1l22 22" style="display: none;"></path>
-                </svg>
-              </button>
+              <span id="total-amount" data-label="总持仓">0.00</span>
             </td>
-          </tr>
+            <td>
+              <span id="total-zfb-profit" data-label="ZFB总收益" class="profit-positive">0.00</span>
+            </td>
+            <td>
+              <span id="total-stock-profit" data-label="证券总收益" class="profit-positive">0.00</span>
+            </td>
+            <td>
+              <span id="total-percent" data-label="总收益率" class="profit-positive">0.00%</span>
+            </td>
+            <td>
+          <span id="total-profit" data-label="总预估收益" class="profit-positive">0.00</span>
+        </td>
+        <td>
+           <button id="toggle-privacy-btn" class="icon-button-small" title="显示/隐藏金额" style="margin: 0 auto;">
+             <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+               <path class="eye-open" d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+               <circle class="eye-open" cx="12" cy="12" r="3"></circle>
+               <path class="eye-closed" d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24M1 1l22 22" style="display: none;"></path>
+             </svg>
+           </button>
+        </td>
+      </tr>
         </tfoot>
 </table>
 </div>
